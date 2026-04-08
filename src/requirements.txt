@@ -1,0 +1,3 @@
+git+https://github.com/MaxApiTeam/PyMax.git@dev/1.2.6
+requests
+python-dotenv

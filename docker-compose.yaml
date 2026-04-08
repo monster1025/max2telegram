@@ -1,0 +1,17 @@
+version: '3'
+services:
+  max:
+    build: ./
+    container_name: max
+    restart: always
+    env_file:
+      - ./.env
+    volumes: 
+      - "./cache:/app/cache"
+      - "/etc/hosts:/etc/hosts"
+    ports:
+      - 5004:5000
+    logging:
+      driver: json-file
+      options:
+        max-size: 50m

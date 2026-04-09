@@ -29,8 +29,10 @@ class MaxToTelegramBridge:
             logger.debug("Skip duplicated message %s/%s", parsed.chat_id, parsed.message_id)
             return
 
-        text = self._format_caption(parsed.sender_name, parsed.chat_name, parsed.text)
-        has_any_payload = bool(text.strip()) or bool(parsed.image_urls) or bool(parsed.video_urls)
+        # Формат зависит от маршрута:
+        # - если найден целевой Telegram-чат (не fallback): "Ирина:\n<текст>"
+        # - если fallback: "Ирина / Свободный микрофон:\n<текст>"
+        # Решение о том, включать ли название чата, принимаем после определения маршрута.
         if not has_any_payload:
             logger.debug("Skip empty message %s/%s", parsed.chat_id, parsed.message_id)
             return
@@ -39,17 +41,31 @@ class MaxToTelegramBridge:
         routed = self._storage.get_chat_route(max_chat_title_norm=normalized)
         if routed:
             target_chat_id = routed
+            is_fallback = False
             logger.info("Route Max chat '%s' to Telegram chat %s (bound)", parsed.chat_name, target_chat_id)
         else:
             target_chat_id, matched_by_title = await self._telegram.resolve_target_chat_id(parsed.chat_name)
             if matched_by_title:
+                is_fallback = False
                 logger.info("Route Max chat '%s' to Telegram chat %s", parsed.chat_name, target_chat_id)
             else:
+                is_fallback = True
                 logger.info(
                     "Telegram chat '%s' not found, route to fallback user %s",
                     parsed.chat_name,
                     target_chat_id,
                 )
+
+        text = self._format_caption(
+            sender_name=parsed.sender_name,
+            chat_name=parsed.chat_name,
+            text=parsed.text,
+            include_chat_name=is_fallback,
+        )
+        has_any_payload = bool(text.strip()) or bool(parsed.image_urls) or bool(parsed.video_urls)
+        if not has_any_payload:
+            logger.debug("Skip empty message %s/%s", parsed.chat_id, parsed.message_id)
+            return
 
         total_media = len(parsed.image_urls) + len(parsed.video_urls)
         if total_media > 1:
@@ -95,10 +111,18 @@ class MaxToTelegramBridge:
         )
 
     @staticmethod
-    def _format_caption(sender_name: str, chat_name: str, text: str) -> str:
-        header = f"MAX: {sender_name} / {chat_name}"
-        if text.strip():
-            return f"{header}\n\n{text}"
+    def _format_caption(*, sender_name: str, chat_name: str, text: str, include_chat_name: bool) -> str:
+        sender_name = (sender_name or "").strip() or "unknown"
+        chat_name = (chat_name or "").strip() or "direct"
+
+        if include_chat_name:
+            header = f"{sender_name} / {chat_name}:"
+        else:
+            header = f"{sender_name}:"
+
+        body = (text or "").strip()
+        if body:
+            return f"{header}\n{body}"
         return header
 
     async def _enrich_from_max(self, max_message: Any, parsed: ParsedMessage) -> ParsedMessage:

@@ -18,6 +18,10 @@ class MaxToTelegramBridge:
         self._storage = storage
 
     async def forward_message(self, max_message: Any) -> None:
+        if self._is_self_message(max_message):
+            logger.debug("Skip self message %s/%s", getattr(max_message, "chat_id", "?"), getattr(max_message, "id", "?"))
+            return
+
         parsed = parse_message(max_message)
         parsed = await self._enrich_from_max(max_message, parsed)
 
@@ -131,6 +135,14 @@ class MaxToTelegramBridge:
         parsed.image_urls = list(dict.fromkeys(parsed.image_urls))
         parsed.video_urls = list(dict.fromkeys(parsed.video_urls))
         return parsed
+
+    def _is_self_message(self, max_message: Any) -> bool:
+        sender = getattr(max_message, "sender", None)
+        me = getattr(self._max_client, "me", None)
+        my_id = getattr(me, "id", None)
+        if sender is None or my_id is None:
+            return False
+        return str(sender) == str(my_id)
 
     def _extract_photo_urls(self, attach: PhotoAttach) -> list[str]:
         urls: list[str] = []

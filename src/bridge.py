@@ -70,12 +70,22 @@ class MaxToTelegramBridge:
         total_media = len(parsed.image_urls) + len(parsed.video_urls)
         if total_media > 1:
             # Отправляем одним альбомом в Telegram (единое сообщение).
-            await self._telegram.send_media_group(
+            sent_messages = await self._telegram.send_media_group(
                 chat_id=target_chat_id,
                 image_urls=parsed.image_urls,
                 video_urls=parsed.video_urls,
                 caption=text,
             )
+            for sent in sent_messages:
+                mid = sent.get("message_id")
+                if mid is None:
+                    continue
+                self._storage.save_mapping(
+                    telegram_chat_id=str(target_chat_id),
+                    telegram_message_id=str(mid),
+                    max_chat_id=str(parsed.chat_id),
+                    max_message_id=str(parsed.message_id),
+                )
             self._storage.mark_forwarded(parsed.message_id, parsed.chat_id)
             logger.info(
                 "Forwarded media group %s/%s (images=%s, videos=%s)",
@@ -88,17 +98,41 @@ class MaxToTelegramBridge:
 
         sent_any = False
         if parsed.text.strip() and total_media == 0:
-            await self._telegram.send_text(target_chat_id, text)
+            sent = await self._telegram.send_text(target_chat_id, text)
+            mid = sent.get("result", {}).get("message_id") if isinstance(sent.get("result"), dict) else None
+            if mid is not None:
+                self._storage.save_mapping(
+                    telegram_chat_id=str(target_chat_id),
+                    telegram_message_id=str(mid),
+                    max_chat_id=str(parsed.chat_id),
+                    max_message_id=str(parsed.message_id),
+                )
             sent_any = True
 
         for index, image_url in enumerate(parsed.image_urls):
             caption = text if not sent_any and index == 0 else None
-            await self._telegram.send_photo(target_chat_id, image_url, caption=caption)
+            sent = await self._telegram.send_photo(target_chat_id, image_url, caption=caption)
+            mid = sent.get("result", {}).get("message_id") if isinstance(sent.get("result"), dict) else None
+            if mid is not None:
+                self._storage.save_mapping(
+                    telegram_chat_id=str(target_chat_id),
+                    telegram_message_id=str(mid),
+                    max_chat_id=str(parsed.chat_id),
+                    max_message_id=str(parsed.message_id),
+                )
             sent_any = True
 
         for index, video_url in enumerate(parsed.video_urls):
             caption = text if not sent_any and index == 0 else None
-            await self._telegram.send_video(target_chat_id, video_url, caption=caption)
+            sent = await self._telegram.send_video(target_chat_id, video_url, caption=caption)
+            mid = sent.get("result", {}).get("message_id") if isinstance(sent.get("result"), dict) else None
+            if mid is not None:
+                self._storage.save_mapping(
+                    telegram_chat_id=str(target_chat_id),
+                    telegram_message_id=str(mid),
+                    max_chat_id=str(parsed.chat_id),
+                    max_message_id=str(parsed.message_id),
+                )
             sent_any = True
 
         self._storage.mark_forwarded(parsed.message_id, parsed.chat_id)

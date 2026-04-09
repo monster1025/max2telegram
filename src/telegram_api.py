@@ -23,8 +23,8 @@ class TelegramClient:
             return chat_id, True
         return self._fallback_user_id, False
 
-    async def send_text(self, chat_id: str, text: str) -> None:
-        await self._request(
+    async def send_text(self, chat_id: str, text: str) -> dict[str, Any]:
+        return await self._request(
             "sendMessage",
             {
                 "chat_id": chat_id,
@@ -33,16 +33,16 @@ class TelegramClient:
             },
         )
 
-    async def send_photo(self, chat_id: str, photo_url: str, caption: str | None = None) -> None:
+    async def send_photo(self, chat_id: str, photo_url: str, caption: str | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "chat_id": chat_id,
             "photo": photo_url,
         }
         if caption:
             payload["caption"] = caption
-        await self._request("sendPhoto", payload)
+        return await self._request("sendPhoto", payload)
 
-    async def send_video(self, chat_id: str, video_url: str, caption: str | None = None) -> None:
+    async def send_video(self, chat_id: str, video_url: str, caption: str | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "chat_id": chat_id,
             "video": video_url,
@@ -50,7 +50,7 @@ class TelegramClient:
         }
         if caption:
             payload["caption"] = caption
-        await self._request("sendVideo", payload)
+        return await self._request("sendVideo", payload)
 
     async def send_media_group(
         self,
@@ -58,7 +58,7 @@ class TelegramClient:
         image_urls: list[str],
         video_urls: list[str],
         caption: str | None = None,
-    ) -> None:
+    ) -> list[dict[str, Any]]:
         media: list[dict[str, Any]] = []
 
         for url in image_urls:
@@ -68,18 +68,22 @@ class TelegramClient:
             media.append({"type": "video", "media": url, "supports_streaming": True})
 
         if not media:
-            return
+            return []
 
         if caption:
             media[0]["caption"] = caption
 
-        await self._request(
+        data = await self._request(
             "sendMediaGroup",
             {
                 "chat_id": chat_id,
                 "media": media,
             },
         )
+        result = data.get("result", [])
+        if not isinstance(result, list):
+            return []
+        return [m for m in result if isinstance(m, dict)]
 
     async def get_me(self) -> dict[str, Any]:
         if self._me is not None:

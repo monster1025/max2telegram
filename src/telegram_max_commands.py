@@ -85,6 +85,31 @@ def _max_chat_title(chat_obj: Any) -> str:
     return f"chat {cid}" if cid is not None else "chat"
 
 
+def _normalize(value: str) -> str:
+    return str(value or "").strip().casefold()
+
+
+async def _refresh_chats_best_effort(max_client: MaxClient) -> None:
+    # group.py: fetch_chats(marker=None) заполняет max_client.chats
+    try:
+        fetch = getattr(max_client, "fetch_chats", None)
+        if fetch is not None:
+            await fetch()
+    except Exception:
+        logger.debug("MAX fetch_chats failed (non-fatal)", exc_info=True)
+
+
+def _find_chat_by_title(max_client: MaxClient, title: str) -> Any | None:
+    wanted = _normalize(title)
+    if not wanted:
+        return None
+    chats = list(getattr(max_client, "chats", []) or [])
+    for c in chats:
+        if _normalize(_max_chat_title(c)) == wanted:
+            return c
+    return None
+
+
 async def _join_by_link(max_client: MaxClient, link: str) -> str:
     """
     PyMax: вступление в группу по ссылке — join_group(link).
@@ -131,17 +156,13 @@ async def handle_control_command(
             "Команды управления MAX (только для fallback_user_id в личке):\n"
             "/help — справка\n"
             "/list — список активных чатов MAX\n"
-            "/join <LINK> — присоединиться к группе/каналу по ссылке"
+            "/join <LINK> — присоединиться к группе/каналу по ссылке\n"
+            "/leave <НАЗВАНИЕ> — покинуть указанный канал\n"
+            "/last_messages <НАЗВАНИЕ> — последние 10 сообщений из канала"
         )
 
     if cmd == "/list":
-        # Обновим список чатов, чтобы /list был полезнее сразу после запуска.
-        try:
-            fetch = getattr(max_client, "fetch_chats", None)
-            if fetch is not None:
-                await fetch()
-        except Exception:
-            logger.debug("MAX fetch_chats failed (non-fatal)", exc_info=True)
+        await _refresh_chats_best_effort(max_client)
 
         chats = list(getattr(max_client, "chats", []) or [])
         if not chats:
@@ -158,6 +179,77 @@ async def handle_control_command(
         if not arg:
             return "Использование: /join <LINK>"
         return await _join_by_link(max_client, arg)
+
+    if cmd == "/leave":
+        if not arg:
+            return "Использование: /leave <НАЗВАНИЕ>"
+
+        await _refresh_chats_best_effort(max_client)
+        chat = _find_chat_by_title(max_client, arg)
+        if chat is None:
+            return f"Чат/канал не найден в активных: {arg}"
+
+        chat_id = getattr(chat, "id", None)
+        if chat_id is None:
+            return "Не смог определить id чата."
+
+        ctype = _infer_max_chat_type(chat)
+        if ctype != "канал":
+            return f"'{_max_chat_title(chat)}' — это не канал (тип: {ctype})."
+
+        method = getattr(max_client, "leave_channel", None)
+        if method is None:
+            return "У клиента MAX нет метода leave_channel(chat_id)."
+
+        try:
+            await method(int(chat_id))
+            return f"Ок: покинул канал '{_max_chat_title(chat)}'."
+        except Exception as e:
+            logger.exception("MAX leave_channel failed")
+            return f"Ошибка при выходе: {e}"
+
+    if cmd == "/last_messages":
+        if not arg:
+            return "Использование: /last_messages <НАЗВАНИЕ>"
+
+        await _refresh_chats_best_effort(max_client)
+        chat = _find_chat_by_title(max_client, arg)
+        if chat is None:
+            return f"Канал не найден в активных: {arg}"
+
+        chat_id = getattr(chat, "id", None)
+        if chat_id is None:
+            return "Не смог определить id канала."
+
+        ctype = _infer_max_chat_type(chat)
+        if ctype != "канал":
+            return f"'{_max_chat_title(chat)}' — это не канал (тип: {ctype})."
+
+        fetch_history = getattr(max_client, "fetch_history", None)
+        if fetch_history is None:
+            return "У клиента MAX нет метода fetch_history(chat_id, backward, forward)."
+
+        try:
+            history = await fetch_history(chat_id=int(chat_id), backward=10, forward=0)
+        except TypeError:
+            history = await fetch_history(int(chat_id), 10, 0)
+        except Exception as e:
+            logger.exception("MAX fetch_history failed")
+            return f"Ошибка при получении истории: {e}"
+
+        messages = list(history or [])
+        if not messages:
+            return f"В канале '{_max_chat_title(chat)}' нет сообщений (или история недоступна)."
+
+        lines: list[str] = []
+        for m in messages[:10]:
+            text_value = str(getattr(m, "text", "") or "").strip()
+            mid = getattr(m, "id", None)
+            if text_value:
+                lines.append(f"- {mid}: {text_value}")
+            else:
+                lines.append(f"- {mid}: <без текста>")
+        return f"Последние сообщения из '{_max_chat_title(chat)}':\n" + "\n".join(lines)
 
     return (
         "Неизвестная команда.\n"

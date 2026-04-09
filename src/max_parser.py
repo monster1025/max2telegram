@@ -77,6 +77,23 @@ def _extract_media_urls(message: Any) -> tuple[list[str], list[str]]:
     return image_urls, video_urls
 
 
+def _extract_max_reply(message: Any) -> tuple[str | None, str | None]:
+    """Извлекает id сообщения MAX, на которое ответили, и короткий превью-текст (если есть)."""
+    link = _get_attr(message, ["link"], default=None)
+    if link is None:
+        return None, None
+    inner = _get_attr(link, ["message"], default=None)
+    if inner is None:
+        return None, None
+    mid = _stringify(_get_attr(inner, ["id", "message_id", "mid"]))
+    if not mid:
+        return None, None
+    preview = _stringify(_get_attr(inner, ["text", "message", "body"]))
+    if preview and len(preview) > 500:
+        preview = preview[:497] + "..."
+    return mid, preview or None
+
+
 def parse_message(message: Any) -> ParsedMessage:
     sender = _get_attr(message, ["sender", "sender_name", "author"], default="unknown")
     sender_data = _as_dict(sender)
@@ -99,6 +116,7 @@ def parse_message(message: Any) -> ParsedMessage:
     text = _stringify(_get_attr(message, ["text", "message", "body"]))
 
     image_urls, video_urls = _extract_media_urls(message)
+    reply_mid, reply_preview = _extract_max_reply(message)
     return ParsedMessage(
         message_id=message_id,
         chat_id=chat_id,
@@ -107,4 +125,6 @@ def parse_message(message: Any) -> ParsedMessage:
         text=text,
         image_urls=image_urls,
         video_urls=video_urls,
+        reply_to_max_message_id=reply_mid,
+        reply_preview_text=reply_preview,
     )

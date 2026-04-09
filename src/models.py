@@ -10,3 +10,6 @@ class ParsedMessage:
     text: str
     image_urls: list[str] = field(default_factory=list)
     video_urls: list[str] = field(default_factory=list)
+    # Ответ в MAX: Message.link указывает на исходное сообщение (тред).
+    reply_to_max_message_id: str | None = None
+    reply_preview_text: str | None = None

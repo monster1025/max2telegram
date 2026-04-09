@@ -105,6 +105,25 @@ class BridgeStorage:
                 return None
             return str(row[0])
 
+    def get_telegram_message_id_for_max(
+        self, *, telegram_chat_id: str, max_chat_id: str, max_message_id: str
+    ) -> str | None:
+        """Обратный поиск: какое сообщение в Telegram соответствует паре MAX chat/message."""
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                """
+                SELECT telegram_message_id
+                FROM message_mapping
+                WHERE telegram_chat_id = ? AND max_chat_id = ? AND max_message_id = ?
+                ORDER BY telegram_message_id
+                LIMIT 1
+                """,
+                (telegram_chat_id, max_chat_id, max_message_id),
+            ).fetchone()
+            if not row:
+                return None
+            return str(row[0])
+
     def set_chat_route(
         self,
         *,

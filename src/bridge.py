@@ -63,6 +63,15 @@ class MaxToTelegramBridge:
             text=parsed.text,
             include_chat_name=is_fallback,
         )
+
+        reply_telegram_mid = self._resolve_telegram_reply_to(
+            telegram_chat_id=str(target_chat_id),
+            max_chat_id=str(parsed.chat_id),
+            parsed=parsed,
+        )
+        if parsed.reply_to_max_message_id and reply_telegram_mid is None:
+            text = self._prepend_max_reply_context(parsed, text)
+
         has_any_payload = bool(text.strip()) or bool(parsed.image_urls) or bool(parsed.video_urls)
         if not has_any_payload:
             logger.debug("Skip empty message %s/%s", parsed.chat_id, parsed.message_id)
@@ -76,6 +85,7 @@ class MaxToTelegramBridge:
                 image_urls=parsed.image_urls,
                 video_urls=parsed.video_urls,
                 caption=text,
+                reply_to_message_id=reply_telegram_mid,
             )
             for sent in sent_messages:
                 mid = sent.get("message_id")
@@ -99,7 +109,9 @@ class MaxToTelegramBridge:
 
         sent_any = False
         if parsed.text.strip() and total_media == 0:
-            sent = await self._telegram.send_text(target_chat_id, text)
+            sent = await self._telegram.send_text(
+                target_chat_id, text, reply_to_message_id=reply_telegram_mid
+            )
             mid = sent.get("result", {}).get("message_id") if isinstance(sent.get("result"), dict) else None
             if mid is not None:
                 self._storage.save_mapping(
@@ -112,7 +124,12 @@ class MaxToTelegramBridge:
 
         for index, image_url in enumerate(parsed.image_urls):
             caption = text if not sent_any and index == 0 else None
-            sent = await self._telegram.send_photo(target_chat_id, image_url, caption=caption)
+            sent = await self._telegram.send_photo(
+                target_chat_id,
+                image_url,
+                caption=caption,
+                reply_to_message_id=reply_telegram_mid if not sent_any and index == 0 else None,
+            )
             mid = sent.get("result", {}).get("message_id") if isinstance(sent.get("result"), dict) else None
             if mid is not None:
                 self._storage.save_mapping(
@@ -125,7 +142,12 @@ class MaxToTelegramBridge:
 
         for index, video_url in enumerate(parsed.video_urls):
             caption = text if not sent_any and index == 0 else None
-            sent = await self._telegram.send_video(target_chat_id, video_url, caption=caption)
+            sent = await self._telegram.send_video(
+                target_chat_id,
+                video_url,
+                caption=caption,
+                reply_to_message_id=reply_telegram_mid if not sent_any and index == 0 else None,
+            )
             mid = sent.get("result", {}).get("message_id") if isinstance(sent.get("result"), dict) else None
             if mid is not None:
                 self._storage.save_mapping(
@@ -144,6 +166,32 @@ class MaxToTelegramBridge:
             len(parsed.image_urls),
             len(parsed.video_urls),
         )
+
+    def _resolve_telegram_reply_to(
+        self, *, telegram_chat_id: str, max_chat_id: str, parsed: ParsedMessage
+    ) -> int | None:
+        if not parsed.reply_to_max_message_id:
+            return None
+        raw = self._storage.get_telegram_message_id_for_max(
+            telegram_chat_id=telegram_chat_id,
+            max_chat_id=max_chat_id,
+            max_message_id=str(parsed.reply_to_max_message_id),
+        )
+        if not raw:
+            return None
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _prepend_max_reply_context(parsed: ParsedMessage, body: str) -> str:
+        """Если в Telegram нет исходного сообщения — сохраняем контекст ответа текстом."""
+        prev = (parsed.reply_preview_text or "").strip()
+        if prev:
+            quoted = "\n".join(f"> {line}" for line in prev.splitlines()[:25])
+            return f"↪ ответ в MAX:\n{quoted}\n\n{body}"
+        return f"↪ ответ в MAX (сообщение id={parsed.reply_to_max_message_id})\n\n{body}"
 
     @staticmethod
     def _format_caption(*, sender_name: str, chat_name: str, text: str, include_chat_name: bool) -> str:

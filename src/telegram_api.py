@@ -27,26 +27,48 @@ class TelegramClient:
             return chat_id, True
         return self._fallback_user_id, False
 
-    async def send_text(self, chat_id: str, text: str) -> dict[str, Any]:
-        return await self._request(
-            "sendMessage",
-            {
-                "chat_id": chat_id,
-                "text": text,
-                "disable_web_page_preview": True,
-            },
-        )
+    async def send_text(
+        self,
+        chat_id: str,
+        text: str,
+        *,
+        reply_to_message_id: int | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "text": text,
+            "disable_web_page_preview": True,
+        }
+        if reply_to_message_id is not None:
+            payload["reply_to_message_id"] = reply_to_message_id
+        return await self._request("sendMessage", payload)
 
-    async def send_photo(self, chat_id: str, photo_url: str, caption: str | None = None) -> dict[str, Any]:
+    async def send_photo(
+        self,
+        chat_id: str,
+        photo_url: str,
+        caption: str | None = None,
+        *,
+        reply_to_message_id: int | None = None,
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "chat_id": chat_id,
             "photo": photo_url,
         }
         if caption:
             payload["caption"] = caption
+        if reply_to_message_id is not None:
+            payload["reply_to_message_id"] = reply_to_message_id
         return await self._request("sendPhoto", payload)
 
-    async def send_video(self, chat_id: str, video_url: str, caption: str | None = None) -> dict[str, Any]:
+    async def send_video(
+        self,
+        chat_id: str,
+        video_url: str,
+        caption: str | None = None,
+        *,
+        reply_to_message_id: int | None = None,
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "chat_id": chat_id,
             "video": video_url,
@@ -54,6 +76,8 @@ class TelegramClient:
         }
         if caption:
             payload["caption"] = caption
+        if reply_to_message_id is not None:
+            payload["reply_to_message_id"] = reply_to_message_id
         return await self._request("sendVideo", payload)
 
     async def send_media_group(
@@ -62,6 +86,8 @@ class TelegramClient:
         image_urls: list[str],
         video_urls: list[str],
         caption: str | None = None,
+        *,
+        reply_to_message_id: int | None = None,
     ) -> list[dict[str, Any]]:
         media: list[dict[str, Any]] = []
 
@@ -77,12 +103,15 @@ class TelegramClient:
         if caption:
             media[0]["caption"] = caption
 
+        mg_payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "media": media,
+        }
+        if reply_to_message_id is not None:
+            mg_payload["reply_to_message_id"] = reply_to_message_id
         data = await self._request(
             "sendMediaGroup",
-            {
-                "chat_id": chat_id,
-                "media": media,
-            },
+            mg_payload,
         )
         result = data.get("result", [])
         if not isinstance(result, list):

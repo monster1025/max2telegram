@@ -93,7 +93,9 @@ class TelegramToMaxBridge:
                 if self._health:
                     self._health.mark_telegram_error()
                 logger.exception("Telegram polling loop error")
-                await asyncio.sleep(2)
+                # 409 Conflict: где-то еще идет getUpdates (другой инстанс или webhook/второй poller).
+                # Делаем backoff, чтобы не долбить API.
+                await asyncio.sleep(10)
 
     async def _handle_updates(self, updates: list[dict[str, Any]]) -> None:
         max_update_id = None

@@ -108,7 +108,19 @@ class TelegramClient:
         result = data.get("result", [])
         if not isinstance(result, list):
             return []
-        return [u for u in result if isinstance(u, dict)]
+        updates = [u for u in result if isinstance(u, dict)]
+        # Важно: не делаем getUpdates нигде больше (иначе 409 Conflict).
+        # Наполняем кэш чатов только из этого потока.
+        for upd in updates:
+            for container in ("message", "edited_message", "channel_post", "edited_channel_post"):
+                msg = upd.get(container)
+                if not isinstance(msg, dict):
+                    continue
+                chat = msg.get("chat")
+                if not isinstance(chat, dict):
+                    continue
+                self._cache_chat(chat)
+        return updates
 
     async def get_file_url(self, file_id: str) -> str:
         data = await self._request("getFile", {"file_id": file_id})
@@ -131,6 +143,12 @@ class TelegramClient:
             },
         )
 
+    def _cache_chat(self, chat: dict[str, Any]) -> None:
+        title_value = self._extract_chat_title(chat)
+        chat_id = chat.get("id")
+        if title_value and chat_id is not None:
+            self._chat_title_to_id[self._normalize_title(title_value)] = str(chat_id)
+
     async def _find_chat_id_by_title(self, chat_title: str) -> str | None:
         normalized = self._normalize_title(chat_title)
         if not normalized:
@@ -139,23 +157,8 @@ class TelegramClient:
         cached = self._chat_title_to_id.get(normalized)
         if cached:
             return cached
-
-        response = await self._request("getUpdates", {"timeout": 0, "limit": 100})
-        for update in response.get("result", []):
-            for container in ("message", "edited_message", "channel_post", "edited_channel_post"):
-                message = update.get(container)
-                if not isinstance(message, dict):
-                    continue
-                chat = message.get("chat")
-                if not isinstance(chat, dict):
-                    continue
-
-                title_value = self._extract_chat_title(chat)
-                chat_id = chat.get("id")
-                if title_value and chat_id is not None:
-                    self._chat_title_to_id[self._normalize_title(title_value)] = str(chat_id)
-
-        return self._chat_title_to_id.get(normalized)
+        # Не дергаем getUpdates здесь — это вызовет конфликт с polling циклом.
+        return None
 
     @staticmethod
     def _extract_chat_title(chat: dict[str, Any]) -> str:

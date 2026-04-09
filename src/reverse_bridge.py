@@ -10,6 +10,7 @@ from pymax.files import Photo, Video
 from storage import BridgeStorage
 from telegram_api import TelegramClient
 from health import HealthState
+from telegram_max_commands import handle_control_command
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,22 @@ class TelegramToMaxBridge:
     async def _handle_message(self, message: dict[str, Any]) -> None:
         chat = message.get("chat")
         if not isinstance(chat, dict):
+            return
+
+        # Управление MAX через Telegram: только личка боту и только от fallback_user_id.
+        # В этом случае команду не пересылаем в MAX.
+        try:
+            reply = await handle_control_command(message, max_client=self._max_client, telegram=self._telegram)
+        except Exception:
+            logger.exception("Telegram MAX control command handler failed")
+            reply = None
+        if reply is not None:
+            chat_id = str(chat.get("id") or "")
+            if chat_id:
+                try:
+                    await self._telegram.send_text(chat_id=chat_id, text=reply)
+                except Exception:
+                    logger.exception("Cannot send Telegram reply for control command")
             return
 
         # Команда привязки чата Telegram к названию чата в MAX (для Max->Telegram маршрутизации).

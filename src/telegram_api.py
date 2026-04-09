@@ -17,6 +17,10 @@ class TelegramClient:
         self._chat_title_to_id: dict[str, str] = {}
         self._me: dict[str, Any] | None = None
 
+    @property
+    def fallback_user_id(self) -> str:
+        return str(self._fallback_user_id or "")
+
     async def resolve_target_chat_id(self, max_chat_name: str) -> tuple[str, bool]:
         chat_id = await self._find_chat_id_by_title(max_chat_name)
         if chat_id:

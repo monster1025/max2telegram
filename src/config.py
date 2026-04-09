@@ -19,10 +19,15 @@ def _require_env(name: str) -> str:
 
 
 def load_settings() -> Settings:
+    max_work_dir = os.getenv("MAX_WORK_DIR", "cache").strip() or "cache"
+    sqlite_env = os.getenv("SQLITE_PATH", "").strip()
+    sqlite_default = os.path.join(max_work_dir, "max2telegram.db")
+    sqlite_path = sqlite_env or sqlite_default
+
     return Settings(
         max_phone=_require_env("MAX_PHONE"),
-        max_work_dir=os.getenv("MAX_WORK_DIR", "cache").strip() or "cache",
+        max_work_dir=max_work_dir,
         telegram_bot_token=_require_env("TELEGRAM_BOT_TOKEN"),
         telegram_fallback_user_id=_require_env("TELEGRAM_FALLBACK_USER_ID"),
-        sqlite_path=os.getenv("SQLITE_PATH", "max2telegram.db").strip() or "max2telegram.db",
+        sqlite_path=sqlite_path,
     )

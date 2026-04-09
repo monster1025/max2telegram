@@ -54,7 +54,7 @@
 - `MAX_WORK_DIR` - директория сессии Max (обычно `cache`);
 - `TELEGRAM_BOT_TOKEN` - токен Telegram-бота;
 - `TELEGRAM_FALLBACK_USER_ID` - id пользователя Telegram для fallback отправки;
-- `SQLITE_PATH` - путь к SQLite базе (например `max2telegram.db`).
+- `SQLITE_PATH` - путь к SQLite базе (рекомендуется `cache/max2telegram.db`, по умолчанию так и будет).
 
 Дополнительно:
 

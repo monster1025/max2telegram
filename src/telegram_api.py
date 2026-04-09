@@ -120,6 +120,17 @@ class TelegramClient:
             raise TelegramApiError(f"Telegram getFile: missing file_path {data}")
         return f"{self._file_base_url}/{file_path}"
 
+    async def add_reaction(self, *, chat_id: str, message_id: str, emoji: str) -> None:
+        # setMessageReaction доступен не везде/не всегда; ошибки реакции не должны ломать бридж
+        await self._request(
+            "setMessageReaction",
+            {
+                "chat_id": chat_id,
+                "message_id": int(message_id),
+                "reaction": [{"type": "emoji", "emoji": emoji}],
+            },
+        )
+
     async def _find_chat_id_by_title(self, chat_title: str) -> str | None:
         normalized = self._normalize_title(chat_title)
         if not normalized:

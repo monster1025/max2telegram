@@ -271,6 +271,16 @@ class TelegramToMaxBridge:
             logger.error("Cannot resolve MAX message id after sending media group (chat_id=%s)", max_chat_id)
             return
 
+        # Реакция на каждое сообщение альбома в Telegram — best effort.
+        for m in messages:
+            mid = m.get("message_id")
+            if mid is None:
+                continue
+            try:
+                await self._telegram.add_reaction(chat_id=telegram_chat_id, message_id=str(mid), emoji="🦄")
+            except Exception:
+                logger.debug("Cannot add Telegram reaction", exc_info=True)
+
         for m in messages:
             tid = str(m.get("message_id"))
             if tid:
@@ -321,6 +331,12 @@ class TelegramToMaxBridge:
         if not max_message_id:
             logger.error("Cannot resolve MAX message id after sending (chat_id=%s)", max_chat_id)
             return
+
+        # Реакция в Telegram: best effort.
+        try:
+            await self._telegram.add_reaction(chat_id=telegram_chat_id, message_id=telegram_message_id, emoji="🦄")
+        except Exception:
+            logger.debug("Cannot add Telegram reaction", exc_info=True)
 
         self._storage.save_mapping(
             telegram_chat_id=telegram_chat_id,

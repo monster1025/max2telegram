@@ -33,6 +33,7 @@ class MaxToTelegramBridge:
         # - если найден целевой Telegram-чат (не fallback): "Ирина:\n<текст>"
         # - если fallback: "Ирина / Свободный микрофон:\n<текст>"
         # Решение о том, включать ли название чата, принимаем после определения маршрута.
+        has_any_payload = bool((parsed.text or "").strip()) or bool(parsed.image_urls) or bool(parsed.video_urls)
         if not has_any_payload:
             logger.debug("Skip empty message %s/%s", parsed.chat_id, parsed.message_id)
             return

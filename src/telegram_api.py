@@ -11,9 +11,11 @@ class TelegramApiError(RuntimeError):
 class TelegramClient:
     def __init__(self, bot_token: str, fallback_user_id: str, timeout: int = 30) -> None:
         self._base_url = f"https://api.telegram.org/bot{bot_token}"
+        self._file_base_url = f"https://api.telegram.org/file/bot{bot_token}"
         self._fallback_user_id = fallback_user_id
         self._timeout = timeout
         self._chat_title_to_id: dict[str, str] = {}
+        self._me: dict[str, Any] | None = None
 
     async def resolve_target_chat_id(self, max_chat_name: str) -> tuple[str, bool]:
         chat_id = await self._find_chat_id_by_title(max_chat_name)
@@ -78,6 +80,41 @@ class TelegramClient:
                 "media": media,
             },
         )
+
+    async def get_me(self) -> dict[str, Any]:
+        if self._me is not None:
+            return self._me
+        data = await self._request("getMe", {})
+        me = data.get("result")
+        if not isinstance(me, dict):
+            raise TelegramApiError(f"Telegram getMe: unexpected payload {data}")
+        self._me = me
+        return me
+
+    async def get_updates(self, *, offset: int | None, timeout: int = 25, limit: int = 100) -> list[dict[str, Any]]:
+        payload: dict[str, Any] = {
+            "timeout": timeout,
+            "limit": limit,
+            # чтобы получать посты из каналов (channel_post) и обычные сообщения
+            "allowed_updates": ["message", "edited_message", "channel_post", "edited_channel_post"],
+        }
+        if offset is not None:
+            payload["offset"] = offset
+        data = await self._request("getUpdates", payload)
+        result = data.get("result", [])
+        if not isinstance(result, list):
+            return []
+        return [u for u in result if isinstance(u, dict)]
+
+    async def get_file_url(self, file_id: str) -> str:
+        data = await self._request("getFile", {"file_id": file_id})
+        result = data.get("result")
+        if not isinstance(result, dict):
+            raise TelegramApiError(f"Telegram getFile: unexpected payload {data}")
+        file_path = result.get("file_path")
+        if not isinstance(file_path, str) or not file_path.strip():
+            raise TelegramApiError(f"Telegram getFile: missing file_path {data}")
+        return f"{self._file_base_url}/{file_path}"
 
     async def _find_chat_id_by_title(self, chat_title: str) -> str | None:
         normalized = self._normalize_title(chat_title)

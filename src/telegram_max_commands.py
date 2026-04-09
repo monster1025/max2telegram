@@ -222,10 +222,6 @@ async def handle_control_command(
         if chat_id is None:
             return "Не смог определить id канала."
 
-        ctype = _infer_max_chat_type(chat)
-        if ctype != "канал":
-            return f"'{_max_chat_title(chat)}' — это не канал (тип: {ctype})."
-
         try:
             # PyMax: MessageMixin.fetch_history(chat_id, from_time=None, forward=0, backward=200)
             # https://github.com/MaxApiTeam/PyMax/blob/041dedeb9f9461b3360e2881a8a18a767de74871/src/pymax/mixins/message.py#L594

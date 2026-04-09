@@ -21,6 +21,30 @@ def _telegram_chat_title(chat: dict[str, Any]) -> str:
     # для каналов обычно есть title; для групп тоже; в крайнем случае — username
     return str(chat.get("title") or chat.get("username") or "").strip()
 
+def _format_sender_line(sender: dict[str, Any] | None) -> str:
+    if not isinstance(sender, dict):
+        return "Unknown:"
+
+    first = str(sender.get("first_name") or "").strip()
+    last = str(sender.get("last_name") or "").strip()
+    username = str(sender.get("username") or "").strip()
+
+    full_name = " ".join([p for p in (first, last) if p])
+    if not full_name:
+        full_name = "Unknown"
+
+    if username:
+        return f"{full_name} (@{username}):"
+    return f"{full_name}:"
+
+
+def _format_forward_text(*, sender: dict[str, Any] | None, text: str) -> str:
+    header = _format_sender_line(sender)
+    body = str(text or "").strip()
+    if body:
+        return f"{header}\n{body}"
+    return header
+
 
 @dataclass
 class _MediaGroupBuffer:
@@ -202,12 +226,13 @@ class TelegramToMaxBridge:
             return
 
         # Telegram может прислать несколько элементов с caption только на первом. Берём text/caption с первого, где он есть.
-        text = ""
+        raw_text = ""
         for m in messages:
             cand = str(m.get("text") or m.get("caption") or "").strip()
             if cand:
-                text = cand
+                raw_text = cand
                 break
+        text = _format_forward_text(sender=messages[0].get("from"), text=raw_text)
 
         reply_to = self._resolve_reply_to_max_id(max_chat_id=max_chat_id, message=messages[0])
 
@@ -215,7 +240,7 @@ class TelegramToMaxBridge:
         for m in messages:
             attachments.extend(await self._extract_attachments(m))
 
-        if not text and not attachments:
+        if not text.strip() and not attachments:
             return
 
         sent = await self._max_client.send_message(
@@ -261,9 +286,10 @@ class TelegramToMaxBridge:
         message: dict[str, Any],
         media_group_id: str | None,
     ) -> None:
-        text = str(message.get("text") or message.get("caption") or "").strip()
+        raw_text = str(message.get("text") or message.get("caption") or "").strip()
+        text = _format_forward_text(sender=message.get("from"), text=raw_text)
         attachments = await self._extract_attachments(message)
-        if not text and not attachments:
+        if not text.strip() and not attachments:
             return
 
         reply_to = self._resolve_reply_to_max_id(max_chat_id=max_chat_id, message=message)

@@ -99,6 +99,13 @@ class TelegramToMaxBridge:
         if not isinstance(chat, dict):
             return
 
+        # Команда привязки чата Telegram к названию чата в MAX (для Max->Telegram маршрутизации).
+        # Работает даже при privacy mode, т.к. команды приходят боту.
+        text = str(message.get("text") or "").strip()
+        if text.startswith("/bind_max"):
+            await self._handle_bind_max_command(message, chat)
+            return
+
         chat_title = _telegram_chat_title(chat)
         normalized = _normalize_title(chat_title)
         if not normalized:
@@ -130,6 +137,37 @@ class TelegramToMaxBridge:
             telegram_message_id=telegram_message_id,
             message=message,
             media_group_id=None,
+        )
+
+    async def _handle_bind_max_command(self, message: dict[str, Any], chat: dict[str, Any]) -> None:
+        raw = str(message.get("text") or "").strip()
+        # формат: /bind_max <точное название чата в MAX>
+        parts = raw.split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            logger.error("bind_max: missing MAX chat title. Use: /bind_max <MAX chat title>")
+            return
+
+        max_title = parts[1].strip()
+        norm = _normalize_title(max_title)
+
+        # проверяем, что чат существует в MAX
+        max_chat_id = self._resolve_max_chat_id_by_title(norm)
+        if max_chat_id is None:
+            logger.error("bind_max: MAX чат '%s' не найден — привязку не сохраняю", max_title)
+            return
+
+        telegram_chat_id = str(chat.get("id"))
+        telegram_title = _telegram_chat_title(chat)
+        self._storage.set_chat_route(
+            max_chat_title_norm=norm,
+            telegram_chat_id=telegram_chat_id,
+            telegram_chat_title=telegram_title,
+        )
+        logger.info(
+            "bind_max: bound MAX '%s' -> Telegram '%s' (%s)",
+            max_title,
+            telegram_title,
+            telegram_chat_id,
         )
 
     async def _flush_ready_media_groups(self) -> None:

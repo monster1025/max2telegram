@@ -35,15 +35,21 @@ class MaxToTelegramBridge:
             logger.debug("Skip empty message %s/%s", parsed.chat_id, parsed.message_id)
             return
 
-        target_chat_id, matched_by_title = await self._telegram.resolve_target_chat_id(parsed.chat_name)
-        if matched_by_title:
-            logger.info("Route Max chat '%s' to Telegram chat %s", parsed.chat_name, target_chat_id)
+        normalized = parsed.chat_name.strip().casefold()
+        routed = self._storage.get_chat_route(max_chat_title_norm=normalized)
+        if routed:
+            target_chat_id = routed
+            logger.info("Route Max chat '%s' to Telegram chat %s (bound)", parsed.chat_name, target_chat_id)
         else:
-            logger.info(
-                "Telegram chat '%s' not found, route to fallback user %s",
-                parsed.chat_name,
-                target_chat_id,
-            )
+            target_chat_id, matched_by_title = await self._telegram.resolve_target_chat_id(parsed.chat_name)
+            if matched_by_title:
+                logger.info("Route Max chat '%s' to Telegram chat %s", parsed.chat_name, target_chat_id)
+            else:
+                logger.info(
+                    "Telegram chat '%s' not found, route to fallback user %s",
+                    parsed.chat_name,
+                    target_chat_id,
+                )
 
         total_media = len(parsed.image_urls) + len(parsed.video_urls)
         if total_media > 1:

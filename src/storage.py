@@ -41,6 +41,16 @@ class BridgeStorage:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_message_mapping_media_group ON message_mapping (telegram_chat_id, media_group_id)"
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_routes (
+                    max_chat_title_norm TEXT PRIMARY KEY,
+                    telegram_chat_id TEXT NOT NULL,
+                    telegram_chat_title TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
             conn.commit()
 
     def was_forwarded(self, message_id: str, chat_id: str) -> bool:
@@ -90,6 +100,33 @@ class BridgeStorage:
                 WHERE telegram_chat_id = ? AND telegram_message_id = ?
                 """,
                 (telegram_chat_id, telegram_message_id),
+            ).fetchone()
+            if not row:
+                return None
+            return str(row[0])
+
+    def set_chat_route(
+        self,
+        *,
+        max_chat_title_norm: str,
+        telegram_chat_id: str,
+        telegram_chat_title: str | None = None,
+    ) -> None:
+        with closing(self._connect()) as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO chat_routes (max_chat_title_norm, telegram_chat_id, telegram_chat_title)
+                VALUES (?, ?, ?)
+                """,
+                (max_chat_title_norm, telegram_chat_id, telegram_chat_title),
+            )
+            conn.commit()
+
+    def get_chat_route(self, *, max_chat_title_norm: str) -> str | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT telegram_chat_id FROM chat_routes WHERE max_chat_title_norm = ?",
+                (max_chat_title_norm,),
             ).fetchone()
             if not row:
                 return None

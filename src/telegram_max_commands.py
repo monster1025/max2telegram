@@ -40,11 +40,12 @@ def _infer_max_chat_type(chat_obj: Any) -> str:
         if value is None:
             continue
         v = str(value).strip().casefold()
-        if v in {"channel", "канал"}:
+        # PyMax часто использует enum-ы вида ChatType.CHANNEL, поэтому проверяем и точные значения, и подстроки.
+        if v in {"channel", "канал"} or "channel" in v or "канал" in v:
             return "канал"
-        if v in {"group", "supergroup", "группа"}:
+        if v in {"group", "supergroup", "группа"} or "group" in v or "груп" in v:
             return "группа"
-        if v in {"direct", "dm", "private"}:
+        if v in {"direct", "dm", "private"} or "direct" in v or "private" in v or "dm" == v:
             return "direct"
 
     # 2) Флаги.
@@ -225,14 +226,12 @@ async def handle_control_command(
         if ctype != "канал":
             return f"'{_max_chat_title(chat)}' — это не канал (тип: {ctype})."
 
-        fetch_history = getattr(max_client, "fetch_history", None)
-        if fetch_history is None:
-            return "У клиента MAX нет метода fetch_history(chat_id, backward, forward)."
-
         try:
-            history = await fetch_history(chat_id=int(chat_id), backward=10, forward=0)
-        except TypeError:
-            history = await fetch_history(int(chat_id), 10, 0)
+            # PyMax: MessageMixin.fetch_history(chat_id, from_time=None, forward=0, backward=200)
+            # https://github.com/MaxApiTeam/PyMax/blob/041dedeb9f9461b3360e2881a8a18a767de74871/src/pymax/mixins/message.py#L594
+            history = await max_client.fetch_history(chat_id=int(chat_id), forward=0, backward=10)
+        except AttributeError:
+            return "У клиента MAX нет метода fetch_history(chat_id, from_time=None, forward=0, backward=200)."
         except Exception as e:
             logger.exception("MAX fetch_history failed")
             return f"Ошибка при получении истории: {e}"

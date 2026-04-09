@@ -9,6 +9,7 @@ from pymax.files import Photo, Video
 
 from storage import BridgeStorage
 from telegram_api import TelegramClient
+from health import HealthState
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +54,18 @@ class _MediaGroupBuffer:
 
 
 class TelegramToMaxBridge:
-    def __init__(self, *, max_client: MaxClient, telegram: TelegramClient, storage: BridgeStorage) -> None:
+    def __init__(
+        self,
+        *,
+        max_client: MaxClient,
+        telegram: TelegramClient,
+        storage: BridgeStorage,
+        health: "HealthState | None" = None,
+    ) -> None:
         self._max_client = max_client
         self._telegram = telegram
         self._storage = storage
+        self._health = health
         self._max_title_to_id: dict[str, int] = {}
 
         self._bot_id: str | None = None
@@ -77,8 +86,12 @@ class TelegramToMaxBridge:
         while True:
             try:
                 updates = await self._telegram.get_updates(offset=self._offset, timeout=25, limit=100)
+                if self._health:
+                    self._health.mark_telegram_ok()
                 await self._handle_updates(updates)
             except Exception:
+                if self._health:
+                    self._health.mark_telegram_error()
                 logger.exception("Telegram polling loop error")
                 await asyncio.sleep(2)
 

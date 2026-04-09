@@ -11,6 +11,12 @@ services:
       - "/etc/hosts:/etc/hosts"
     ports:
       - 5004:5000
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; import json; r=urllib.request.urlopen('http://127.0.0.1:5000/healthz', timeout=3); sys.exit(0 if r.status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     logging:
       driver: json-file
       options:

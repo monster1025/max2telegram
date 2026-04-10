@@ -48,6 +48,22 @@ def _format_forward_text(*, sender: dict[str, Any] | None, text: str) -> str:
     return header
 
 
+def _is_supported_telegram_message(message: dict[str, Any]) -> bool:
+    text = message.get("text")
+    if isinstance(text, str) and text.strip():
+        return True
+
+    photos = message.get("photo")
+    if isinstance(photos, list) and any(isinstance(p, dict) and p.get("file_id") for p in photos):
+        return True
+
+    video = message.get("video")
+    if isinstance(video, dict) and video.get("file_id"):
+        return True
+
+    return False
+
+
 @dataclass
 class _MediaGroupBuffer:
     first_seen_monotonic: float
@@ -126,6 +142,9 @@ class TelegramToMaxBridge:
             if not message:
                 continue
 
+            if not _is_supported_telegram_message(message):
+                continue
+
             if self._is_own_telegram_message(message):
                 continue
 
@@ -151,6 +170,14 @@ class TelegramToMaxBridge:
         if not isinstance(chat, dict):
             return
 
+        # Команда привязки чата Telegram к названию чата в MAX (для Max->Telegram маршрутизации).
+        # Обрабатываем раньше control-команд, чтобы /bind_max не попадала как "неизвестная".
+        text = str(message.get("text") or "").strip()
+        cmd = text.split(maxsplit=1)[0].split("@", 1)[0].strip().casefold() if text else ""
+        if cmd == "/bind_max":
+            await self._handle_bind_max_command(message, chat)
+            return
+
         # Управление MAX через Telegram: только личка боту и только от fallback_user_id.
         # В этом случае команду не пересылаем в MAX.
         try:
@@ -165,13 +192,6 @@ class TelegramToMaxBridge:
                     await self._telegram.send_text(chat_id=chat_id, text=reply)
                 except Exception:
                     logger.exception("Cannot send Telegram reply for control command")
-            return
-
-        # Команда привязки чата Telegram к названию чата в MAX (для Max->Telegram маршрутизации).
-        # Работает даже при privacy mode, т.к. команды приходят боту.
-        text = str(message.get("text") or "").strip()
-        if text.startswith("/bind_max"):
-            await self._handle_bind_max_command(message, chat)
             return
 
         chat_title = _telegram_chat_title(chat)
@@ -209,10 +229,13 @@ class TelegramToMaxBridge:
 
     async def _handle_bind_max_command(self, message: dict[str, Any], chat: dict[str, Any]) -> None:
         raw = str(message.get("text") or "").strip()
+        chat_id = str(chat.get("id") or "")
         # формат: /bind_max <точное название чата в MAX>
         parts = raw.split(maxsplit=1)
         if len(parts) < 2 or not parts[1].strip():
             logger.error("bind_max: missing MAX chat title. Use: /bind_max <MAX chat title>")
+            if chat_id:
+                await self._telegram.send_text(chat_id=chat_id, text="Использование: /bind_max <точное название чата в MAX>")
             return
 
         max_title = parts[1].strip()
@@ -222,9 +245,11 @@ class TelegramToMaxBridge:
         max_chat_id = self._resolve_max_chat_id_by_title(norm)
         if max_chat_id is None:
             logger.error("bind_max: MAX чат '%s' не найден — привязку не сохраняю", max_title)
+            if chat_id:
+                await self._telegram.send_text(chat_id=chat_id, text=f"MAX чат '{max_title}' не найден. Привязка не сохранена.")
             return
 
-        telegram_chat_id = str(chat.get("id"))
+        telegram_chat_id = chat_id
         telegram_title = _telegram_chat_title(chat)
         self._storage.set_chat_route(
             max_chat_title_norm=norm,
@@ -237,6 +262,11 @@ class TelegramToMaxBridge:
             telegram_title,
             telegram_chat_id,
         )
+        if chat_id:
+            await self._telegram.send_text(
+                chat_id=chat_id,
+                text=f"Канал успешно привязан: Telegram '{telegram_title or telegram_chat_id}' -> MAX '{max_title}'.",
+            )
 
     async def _flush_ready_media_groups(self) -> None:
         now = time.monotonic()

@@ -51,13 +51,21 @@ def main() -> None:
 
     reverse_bridge = TelegramToMaxBridge(max_client=max_client, telegram=telegram_client, storage=storage, health=health)
     logger = logging.getLogger("max2telegram")
+    reverse_bridge_task: asyncio.Task[None] | None = None
+    max_probe_task: asyncio.Task[None] | None = None
 
     @max_client.on_start
     async def on_start() -> None:
+        nonlocal reverse_bridge_task, max_probe_task
         logger.info("Max client started as %s", max_client.me.id)
         health.mark_max_ok()
-        asyncio.create_task(reverse_bridge.start())
-        asyncio.create_task(_max_probe_loop(max_client=max_client, health=health))
+        if reverse_bridge_task is None or reverse_bridge_task.done():
+            reverse_bridge_task = asyncio.create_task(reverse_bridge.start(), name="reverse-bridge")
+        if max_probe_task is None or max_probe_task.done():
+            max_probe_task = asyncio.create_task(
+                _max_probe_loop(max_client=max_client, health=health),
+                name="max-probe-loop",
+            )
 
     @max_client.on_message()
     async def on_message(message: Message) -> None:

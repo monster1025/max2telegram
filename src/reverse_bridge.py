@@ -74,29 +74,41 @@ class TelegramToMaxBridge:
 
         self._media_groups: dict[tuple[str, str], _MediaGroupBuffer] = {}
         self._media_group_grace_sec = 1.2
+        self._start_lock = asyncio.Lock()
+        self._is_running = False
 
     async def start(self) -> None:
-        me = await self._telegram.get_me()
-        self._bot_id = str(me.get("id") or "")
-        if not self._bot_id:
-            raise RuntimeError("Cannot resolve Telegram bot id (getMe)")
+        async with self._start_lock:
+            if self._is_running:
+                logger.warning("Telegram->Max bridge start skipped: poller is already running")
+                return
+            self._is_running = True
 
-        self._refresh_max_chat_cache()
-        logger.info("Telegram->Max bridge started (bot_id=%s)", self._bot_id)
+        try:
+            me = await self._telegram.get_me()
+            self._bot_id = str(me.get("id") or "")
+            if not self._bot_id:
+                raise RuntimeError("Cannot resolve Telegram bot id (getMe)")
 
-        while True:
-            try:
-                updates = await self._telegram.get_updates(offset=self._offset, timeout=25, limit=100)
-                if self._health:
-                    self._health.mark_telegram_ok()
-                await self._handle_updates(updates)
-            except Exception:
-                if self._health:
-                    self._health.mark_telegram_error()
-                logger.exception("Telegram polling loop error")
-                # 409 Conflict: где-то еще идет getUpdates (другой инстанс или webhook/второй poller).
-                # Делаем backoff, чтобы не долбить API.
-                await asyncio.sleep(10)
+            self._refresh_max_chat_cache()
+            logger.info("Telegram->Max bridge started (bot_id=%s)", self._bot_id)
+
+            while True:
+                try:
+                    updates = await self._telegram.get_updates(offset=self._offset, timeout=25, limit=100)
+                    if self._health:
+                        self._health.mark_telegram_ok()
+                    await self._handle_updates(updates)
+                except Exception:
+                    if self._health:
+                        self._health.mark_telegram_error()
+                    logger.exception("Telegram polling loop error")
+                    # 409 Conflict: где-то еще идет getUpdates (другой инстанс или webhook/второй poller).
+                    # Делаем backoff, чтобы не долбить API.
+                    await asyncio.sleep(10)
+        finally:
+            async with self._start_lock:
+                self._is_running = False
 
     async def _handle_updates(self, updates: list[dict[str, Any]]) -> None:
         max_update_id = None

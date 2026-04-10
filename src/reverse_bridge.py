@@ -49,16 +49,19 @@ def _format_forward_text(*, sender: dict[str, Any] | None, text: str) -> str:
 
 
 def _is_supported_telegram_message(message: dict[str, Any]) -> bool:
+    # Текстовые сообщения и команды.
     text = message.get("text")
     if isinstance(text, str) and text.strip():
         return True
 
     photos = message.get("photo")
-    if isinstance(photos, list) and any(isinstance(p, dict) and p.get("file_id") for p in photos):
+    has_photo = isinstance(photos, list) and any(isinstance(p, dict) and p.get("file_id") for p in photos)
+    if has_photo:
         return True
 
     video = message.get("video")
-    if isinstance(video, dict) and video.get("file_id"):
+    has_video = isinstance(video, dict) and video.get("file_id")
+    if has_video:
         return True
 
     return False
@@ -134,7 +137,7 @@ class TelegramToMaxBridge:
                 max_update_id = upd_id if max_update_id is None else max(max_update_id, upd_id)
 
             message = None
-            for container in ("message", "edited_message", "channel_post", "edited_channel_post"):
+            for container in ("message", "channel_post"):
                 candidate = upd.get(container)
                 if isinstance(candidate, dict):
                     message = candidate

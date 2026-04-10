@@ -132,8 +132,8 @@ class TelegramClient:
         payload: dict[str, Any] = {
             "timeout": timeout,
             "limit": limit,
-            # чтобы получать посты из каналов (channel_post) и обычные сообщения
-            "allowed_updates": ["message", "edited_message", "channel_post", "edited_channel_post"],
+            # Реагируем только на новые сообщения/посты (текст, фото, видео).
+            "allowed_updates": ["message", "channel_post"],
         }
         if offset is not None:
             payload["offset"] = offset
@@ -145,7 +145,7 @@ class TelegramClient:
         # Важно: не делаем getUpdates нигде больше (иначе 409 Conflict).
         # Наполняем кэш чатов только из этого потока.
         for upd in updates:
-            for container in ("message", "edited_message", "channel_post", "edited_channel_post"):
+            for container in ("message", "channel_post"):
                 msg = upd.get(container)
                 if not isinstance(msg, dict):
                     continue

@@ -6,6 +6,10 @@
 #
 # Опционально: Variables → DOCKERHUB_IMAGE (например org/max2telegram), если имя образа
 # отличается от <DOCKERHUB_USERNAME>/max2telegram.
+#
+# Теги образа:
+#   push в master → dev (+ sha)
+#   push тега v*  → {{version}}, {{major}}.{{minor}}, latest (+ sha)
 
 name: Docker Hub
 
@@ -57,11 +61,11 @@ jobs:
         with:
           images: ${{ steps.image.outputs.name }}
           tags: |
-            type=ref,event=branch
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/master' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
             type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push
         uses: docker/build-push-action@v6

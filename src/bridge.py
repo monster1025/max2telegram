@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from max_parser import parse_message
@@ -6,7 +7,7 @@ from models import ParsedMessage
 from pymax import MaxClient
 from pymax.types import PhotoAttach, VideoAttach
 from storage import BridgeStorage
-from telegram_api import TelegramClient
+from telegram_api import TelegramApiError, TelegramClient
 
 logger = logging.getLogger(__name__)
 
@@ -80,12 +81,17 @@ class MaxToTelegramBridge:
         total_media = len(parsed.image_urls) + len(parsed.video_urls)
         if total_media > 1:
             # Отправляем одним альбомом в Telegram (единое сообщение).
-            sent_messages = await self._telegram.send_media_group(
-                chat_id=target_chat_id,
-                image_urls=parsed.image_urls,
-                video_urls=parsed.video_urls,
-                caption=text,
-                reply_to_message_id=reply_telegram_mid,
+            target_chat_id, sent_messages = await self._send_with_migration_retry(
+                target_chat_id=target_chat_id,
+                max_chat_title_norm=normalized,
+                max_chat_title=parsed.chat_name,
+                send_action=lambda chat_id: self._telegram.send_media_group(
+                    chat_id=chat_id,
+                    image_urls=parsed.image_urls,
+                    video_urls=parsed.video_urls,
+                    caption=text,
+                    reply_to_message_id=reply_telegram_mid,
+                ),
             )
             for sent in sent_messages:
                 mid = sent.get("message_id")
@@ -109,8 +115,13 @@ class MaxToTelegramBridge:
 
         sent_any = False
         if parsed.text.strip() and total_media == 0:
-            sent = await self._telegram.send_text(
-                target_chat_id, text, reply_to_message_id=reply_telegram_mid
+            target_chat_id, sent = await self._send_with_migration_retry(
+                target_chat_id=target_chat_id,
+                max_chat_title_norm=normalized,
+                max_chat_title=parsed.chat_name,
+                send_action=lambda chat_id: self._telegram.send_text(
+                    chat_id, text, reply_to_message_id=reply_telegram_mid
+                ),
             )
             mid = sent.get("result", {}).get("message_id") if isinstance(sent.get("result"), dict) else None
             if mid is not None:
@@ -124,11 +135,16 @@ class MaxToTelegramBridge:
 
         for index, image_url in enumerate(parsed.image_urls):
             caption = text if not sent_any and index == 0 else None
-            sent = await self._telegram.send_photo(
-                target_chat_id,
-                image_url,
-                caption=caption,
-                reply_to_message_id=reply_telegram_mid if not sent_any and index == 0 else None,
+            target_chat_id, sent = await self._send_with_migration_retry(
+                target_chat_id=target_chat_id,
+                max_chat_title_norm=normalized,
+                max_chat_title=parsed.chat_name,
+                send_action=lambda chat_id: self._telegram.send_photo(
+                    chat_id,
+                    image_url,
+                    caption=caption,
+                    reply_to_message_id=reply_telegram_mid if not sent_any and index == 0 else None,
+                ),
             )
             mid = sent.get("result", {}).get("message_id") if isinstance(sent.get("result"), dict) else None
             if mid is not None:
@@ -142,11 +158,16 @@ class MaxToTelegramBridge:
 
         for index, video_url in enumerate(parsed.video_urls):
             caption = text if not sent_any and index == 0 else None
-            sent = await self._telegram.send_video(
-                target_chat_id,
-                video_url,
-                caption=caption,
-                reply_to_message_id=reply_telegram_mid if not sent_any and index == 0 else None,
+            target_chat_id, sent = await self._send_with_migration_retry(
+                target_chat_id=target_chat_id,
+                max_chat_title_norm=normalized,
+                max_chat_title=parsed.chat_name,
+                send_action=lambda chat_id: self._telegram.send_video(
+                    chat_id,
+                    video_url,
+                    caption=caption,
+                    reply_to_message_id=reply_telegram_mid if not sent_any and index == 0 else None,
+                ),
             )
             mid = sent.get("result", {}).get("message_id") if isinstance(sent.get("result"), dict) else None
             if mid is not None:
@@ -166,6 +187,35 @@ class MaxToTelegramBridge:
             len(parsed.image_urls),
             len(parsed.video_urls),
         )
+
+    async def _send_with_migration_retry(
+        self,
+        *,
+        target_chat_id: str,
+        max_chat_title_norm: str,
+        max_chat_title: str,
+        send_action: Callable[[str], Awaitable[Any]],
+    ) -> tuple[str, Any]:
+        try:
+            sent = await send_action(target_chat_id)
+            return target_chat_id, sent
+        except TelegramApiError as exc:
+            migrated_chat_id = exc.migrate_to_chat_id
+            if not migrated_chat_id or migrated_chat_id == str(target_chat_id):
+                raise
+            logger.warning(
+                "Telegram chat %s upgraded to %s for MAX chat '%s'; update route and retry",
+                target_chat_id,
+                migrated_chat_id,
+                max_chat_title,
+            )
+            self._storage.set_chat_route(
+                max_chat_title_norm=max_chat_title_norm,
+                telegram_chat_id=migrated_chat_id,
+                telegram_chat_title=max_chat_title,
+            )
+            sent = await send_action(migrated_chat_id)
+            return migrated_chat_id, sent
 
     def _resolve_telegram_reply_to(
         self, *, telegram_chat_id: str, max_chat_id: str, parsed: ParsedMessage

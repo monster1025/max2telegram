@@ -1,11 +1,34 @@
 import asyncio
+import json
 from typing import Any
 
 import requests
 
 
 class TelegramApiError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        method: str | None = None,
+        status_code: int | None = None,
+        error_code: int | None = None,
+        description: str | None = None,
+        parameters: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.method = method
+        self.status_code = status_code
+        self.error_code = error_code
+        self.description = description
+        self.parameters = parameters or {}
+
+    @property
+    def migrate_to_chat_id(self) -> str | None:
+        value = self.parameters.get("migrate_to_chat_id")
+        if value is None:
+            return None
+        return str(value)
 
 
 class TelegramClient:
@@ -209,10 +232,36 @@ class TelegramClient:
 
         response = await asyncio.to_thread(_do_request)
         if response.status_code >= 400:
+            error_code: int | None = None
+            description: str | None = None
+            parameters: dict[str, Any] = {}
+            try:
+                payload_data = response.json()
+                if isinstance(payload_data, dict):
+                    if isinstance(payload_data.get("error_code"), int):
+                        error_code = payload_data.get("error_code")
+                    if isinstance(payload_data.get("description"), str):
+                        description = payload_data.get("description")
+                    if isinstance(payload_data.get("parameters"), dict):
+                        parameters = payload_data.get("parameters", {})
+            except (json.JSONDecodeError, ValueError):
+                payload_data = None
+
             raise TelegramApiError(
-                f"Telegram HTTP error on {method}: {response.status_code} {response.text}"
+                f"Telegram HTTP error on {method}: {response.status_code} {response.text}",
+                method=method,
+                status_code=response.status_code,
+                error_code=error_code,
+                description=description,
+                parameters=parameters,
             )
         data = response.json()
         if not data.get("ok"):
-            raise TelegramApiError(f"Telegram API error on {method}: {data}")
+            raise TelegramApiError(
+                f"Telegram API error on {method}: {data}",
+                method=method,
+                error_code=data.get("error_code") if isinstance(data.get("error_code"), int) else None,
+                description=data.get("description") if isinstance(data.get("description"), str) else None,
+                parameters=data.get("parameters") if isinstance(data.get("parameters"), dict) else None,
+            )
         return data

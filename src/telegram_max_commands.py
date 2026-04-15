@@ -90,6 +90,37 @@ def _normalize(value: str) -> str:
     return str(value or "").strip().casefold()
 
 
+def _deduplicate_chats(chats: list[Any]) -> list[Any]:
+    """
+    Возвращает уникальные чаты с сохранением исходного порядка.
+    Сначала пытаемся уникализировать по chat.id, затем по нормализованному title.
+    """
+    unique: list[Any] = []
+    seen_ids: set[str] = set()
+    seen_titles: set[str] = set()
+
+    for chat in chats:
+        chat_id = getattr(chat, "id", None)
+        if chat_id is not None:
+            key_id = str(chat_id).strip()
+            if key_id in seen_ids:
+                continue
+            seen_ids.add(key_id)
+            unique.append(chat)
+            continue
+
+        key_title = _normalize(_max_chat_title(chat))
+        if not key_title:
+            unique.append(chat)
+            continue
+        if key_title in seen_titles:
+            continue
+        seen_titles.add(key_title)
+        unique.append(chat)
+
+    return unique
+
+
 async def _refresh_chats_best_effort(max_client: MaxClient) -> None:
     # group.py: fetch_chats(marker=None) заполняет max_client.chats
     try:
@@ -104,7 +135,7 @@ def _find_chat_by_title(max_client: MaxClient, title: str) -> Any | None:
     wanted = _normalize(title)
     if not wanted:
         return None
-    chats = list(getattr(max_client, "chats", []) or [])
+    chats = _deduplicate_chats(list(getattr(max_client, "chats", []) or []))
     for c in chats:
         if _normalize(_max_chat_title(c)) == wanted:
             return c
@@ -166,7 +197,7 @@ async def handle_control_command(
     if cmd == "/list":
         await _refresh_chats_best_effort(max_client)
 
-        chats = list(getattr(max_client, "chats", []) or [])
+        chats = _deduplicate_chats(list(getattr(max_client, "chats", []) or []))
         if not chats:
             return "Список чатов пуст (или клиент MAX ещё не успел их загрузить)."
 

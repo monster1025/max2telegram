@@ -34,11 +34,6 @@ class MaxToTelegramBridge:
         # - если найден целевой Telegram-чат (не fallback): "Ирина:\n<текст>"
         # - если fallback: "Ирина / Свободный микрофон:\n<текст>"
         # Решение о том, включать ли название чата, принимаем после определения маршрута.
-        has_any_payload = bool((parsed.text or "").strip()) or bool(parsed.image_urls) or bool(parsed.video_urls)
-        if not has_any_payload:
-            logger.debug("Skip empty message %s/%s", parsed.chat_id, parsed.message_id)
-            return
-
         normalized = parsed.chat_name.strip().casefold()
         routed = self._storage.get_chat_route(max_chat_title_norm=normalized)
         if routed:
@@ -64,6 +59,7 @@ class MaxToTelegramBridge:
             text=parsed.text,
             include_chat_name=is_fallback,
         )
+        text = self._append_unknown_attachment_notice(parsed=parsed, text=text)
 
         reply_telegram_mid = self._resolve_telegram_reply_to(
             telegram_chat_id=str(target_chat_id),
@@ -73,12 +69,12 @@ class MaxToTelegramBridge:
         if parsed.reply_to_max_message_id and reply_telegram_mid is None:
             text = self._prepend_max_reply_context(parsed, text)
 
-        has_any_payload = bool(text.strip()) or bool(parsed.image_urls) or bool(parsed.video_urls)
+        has_any_payload = bool(text.strip()) or bool(parsed.image_urls) or bool(parsed.video_urls) or bool(parsed.file_urls)
         if not has_any_payload:
-            logger.debug("Skip empty message %s/%s", parsed.chat_id, parsed.message_id)
-            return
+            text = self._build_fallback_unknown_notice(parsed)
 
         total_media = len(parsed.image_urls) + len(parsed.video_urls)
+        sent_any = False
         if total_media > 1:
             # Отправляем одним альбомом в Telegram (единое сообщение).
             target_chat_id, sent_messages = await self._send_with_migration_retry(
@@ -103,6 +99,7 @@ class MaxToTelegramBridge:
                     max_chat_id=str(parsed.chat_id),
                     max_message_id=str(parsed.message_id),
                 )
+                sent_any = True
             self._storage.mark_forwarded(parsed.message_id, parsed.chat_id)
             logger.info(
                 "Forwarded media group %s/%s (images=%s, videos=%s)",
@@ -113,7 +110,6 @@ class MaxToTelegramBridge:
             )
             return
 
-        sent_any = False
         if parsed.text.strip() and total_media == 0:
             target_chat_id, sent = await self._send_with_migration_retry(
                 target_chat_id=target_chat_id,
@@ -179,14 +175,79 @@ class MaxToTelegramBridge:
                 )
             sent_any = True
 
+        for index, file_url in enumerate(parsed.file_urls):
+            caption = text if not sent_any and index == 0 else None
+            target_chat_id, sent = await self._send_with_migration_retry(
+                target_chat_id=target_chat_id,
+                max_chat_title_norm=normalized,
+                max_chat_title=parsed.chat_name,
+                send_action=lambda chat_id: self._telegram.send_document(
+                    chat_id,
+                    file_url,
+                    caption=caption,
+                    reply_to_message_id=reply_telegram_mid if not sent_any and index == 0 else None,
+                ),
+            )
+            mid = sent.get("result", {}).get("message_id") if isinstance(sent.get("result"), dict) else None
+            if mid is not None:
+                self._storage.save_mapping(
+                    telegram_chat_id=str(target_chat_id),
+                    telegram_message_id=str(mid),
+                    max_chat_id=str(parsed.chat_id),
+                    max_message_id=str(parsed.message_id),
+                )
+            sent_any = True
+
+        if not sent_any:
+            # Последняя страховка: гарантируем уведомление в Telegram даже для пустых/неизвестных payload.
+            target_chat_id, sent = await self._send_with_migration_retry(
+                target_chat_id=target_chat_id,
+                max_chat_title_norm=normalized,
+                max_chat_title=parsed.chat_name,
+                send_action=lambda chat_id: self._telegram.send_text(
+                    chat_id, self._build_fallback_unknown_notice(parsed), reply_to_message_id=reply_telegram_mid
+                ),
+            )
+            mid = sent.get("result", {}).get("message_id") if isinstance(sent.get("result"), dict) else None
+            if mid is not None:
+                self._storage.save_mapping(
+                    telegram_chat_id=str(target_chat_id),
+                    telegram_message_id=str(mid),
+                    max_chat_id=str(parsed.chat_id),
+                    max_message_id=str(parsed.message_id),
+                )
+            sent_any = True
+
         self._storage.mark_forwarded(parsed.message_id, parsed.chat_id)
         logger.info(
-            "Forwarded message %s/%s (images=%s, videos=%s)",
+            "Forwarded message %s/%s (images=%s, videos=%s, files=%s, unknown=%s)",
             parsed.chat_id,
             parsed.message_id,
             len(parsed.image_urls),
             len(parsed.video_urls),
+            len(parsed.file_urls),
+            len(parsed.unknown_attachments),
         )
+
+    async def notify_delivery_failure(self, max_message: Any, error: Exception) -> None:
+        """Best-effort аварийное уведомление, если основной форвардинг упал."""
+        try:
+            parsed = parse_message(max_message)
+            parsed = await self._enrich_from_max(max_message, parsed)
+            body = self._build_fallback_unknown_notice(parsed)
+            body = f"{body}\n\n[bridge-error] {type(error).__name__}: {error}"
+        except Exception:
+            body = f"[!] Сообщение из MAX не доставлено в Telegram из-за ошибки bridge: {type(error).__name__}: {error}"
+
+        fallback_chat_id = self._telegram.fallback_user_id
+        if not fallback_chat_id:
+            logger.error("Cannot send emergency notice: Telegram fallback user id is empty")
+            return
+        try:
+            await self._telegram.send_text(chat_id=fallback_chat_id, text=body)
+            logger.warning("Sent emergency notice to Telegram fallback chat %s", fallback_chat_id)
+        except Exception:
+            logger.exception("Cannot send emergency notice to Telegram")
 
     async def _send_with_migration_retry(
         self,
@@ -293,10 +354,18 @@ class MaxToTelegramBridge:
                         parsed.video_urls.append(str(video_url))
                 except Exception:
                     logger.exception("Cannot resolve video URL from Max")
+            else:
+                urls = self._extract_any_urls(attach)
+                if urls:
+                    parsed.file_urls.extend(urls)
+                else:
+                    parsed.unknown_attachments.append(type(attach).__name__)
 
         # Убираем дубли URL, если парсер и enrich нашли одинаковые вложения.
         parsed.image_urls = list(dict.fromkeys(parsed.image_urls))
         parsed.video_urls = list(dict.fromkeys(parsed.video_urls))
+        parsed.file_urls = list(dict.fromkeys(parsed.file_urls))
+        parsed.unknown_attachments = list(dict.fromkeys(parsed.unknown_attachments))
         return parsed
 
     def _is_self_message(self, max_message: Any) -> bool:
@@ -345,3 +414,52 @@ class MaxToTelegramBridge:
 
         walk(attach)
         return list(dict.fromkeys(urls))
+
+    def _extract_any_urls(self, node: Any) -> list[str]:
+        urls: list[str] = []
+        seen_ids: set[int] = set()
+
+        def walk(value: Any) -> None:
+            if value is None:
+                return
+            obj_id = id(value)
+            if obj_id in seen_ids:
+                return
+            seen_ids.add(obj_id)
+
+            if isinstance(value, str):
+                if value.startswith("http://") or value.startswith("https://"):
+                    urls.append(value)
+                return
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    walk(item)
+                return
+            if isinstance(value, dict):
+                for nested in value.values():
+                    walk(nested)
+                return
+            if hasattr(value, "__dict__"):
+                walk(vars(value))
+
+        walk(node)
+        return list(dict.fromkeys(urls))
+
+    @staticmethod
+    def _append_unknown_attachment_notice(*, parsed: ParsedMessage, text: str) -> str:
+        if not parsed.unknown_attachments:
+            return text
+        unknown_preview = ", ".join(parsed.unknown_attachments[:5])
+        suffix = f"\n\n[!] Неизвестный тип вложения из MAX: {unknown_preview}"
+        return f"{text}{suffix}" if text else suffix.strip()
+
+    @staticmethod
+    def _build_fallback_unknown_notice(parsed: ParsedMessage) -> str:
+        base = MaxToTelegramBridge._format_caption(
+            sender_name=parsed.sender_name,
+            chat_name=parsed.chat_name,
+            text=parsed.text,
+            include_chat_name=True,
+        )
+        unknown = ", ".join(parsed.unknown_attachments[:5]) if parsed.unknown_attachments else "unknown"
+        return f"{base}\n\n[!] Неизвестный или пустой тип сообщения из MAX (attachments={unknown})."

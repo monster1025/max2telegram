@@ -36,9 +36,11 @@ def _is_video(media_type: str) -> bool:
     return "video" in value or value in {"mp4", "mov", "mkv", "avi"}
 
 
-def _extract_media_urls(message: Any) -> tuple[list[str], list[str]]:
+def _extract_media_urls(message: Any) -> tuple[list[str], list[str], list[str], list[str]]:
     image_urls: list[str] = []
     video_urls: list[str] = []
+    file_urls: list[str] = []
+    unknown_attachments: list[str] = []
 
     # В PyMax рабочее поле для вложений обычно называется attaches.
     raw_attachments = _get_attr(message, ["attaches", "attachments", "media", "files"], default=[]) or []
@@ -67,14 +69,18 @@ def _extract_media_urls(message: Any) -> tuple[list[str], list[str]]:
                 media_type = _stringify(nested_data.get("type") or nested_data.get("media_type"))
 
         if not url:
+            kind = media_type or _stringify(type(item).__name__) or "unknown"
+            unknown_attachments.append(kind)
             continue
 
         if _is_image(media_type):
             image_urls.append(url)
         elif _is_video(media_type):
             video_urls.append(url)
+        else:
+            file_urls.append(url)
 
-    return image_urls, video_urls
+    return image_urls, video_urls, file_urls, unknown_attachments
 
 
 def _extract_max_reply(message: Any) -> tuple[str | None, str | None]:
@@ -115,7 +121,7 @@ def parse_message(message: Any) -> ParsedMessage:
     chat_id = _stringify(_get_attr(message, ["chat_id", "dialog_id", "peer_id"])) or "unknown-chat"
     text = _stringify(_get_attr(message, ["text", "message", "body"]))
 
-    image_urls, video_urls = _extract_media_urls(message)
+    image_urls, video_urls, file_urls, unknown_attachments = _extract_media_urls(message)
     reply_mid, reply_preview = _extract_max_reply(message)
     return ParsedMessage(
         message_id=message_id,
@@ -125,6 +131,8 @@ def parse_message(message: Any) -> ParsedMessage:
         text=text,
         image_urls=image_urls,
         video_urls=video_urls,
+        file_urls=file_urls,
+        unknown_attachments=unknown_attachments,
         reply_to_max_message_id=reply_mid,
         reply_preview_text=reply_preview,
     )

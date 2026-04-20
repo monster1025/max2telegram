@@ -72,8 +72,9 @@ def main() -> None:
         health.mark_max_event()
         try:
             await bridge.forward_message(message)
-        except Exception:
+        except Exception as exc:
             logger.exception("Failed to forward Max message")
+            await bridge.notify_delivery_failure(message, exc)
 
     asyncio.run(max_client.start())
 

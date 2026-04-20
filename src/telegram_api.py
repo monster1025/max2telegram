@@ -103,6 +103,24 @@ class TelegramClient:
             payload["reply_to_message_id"] = reply_to_message_id
         return await self._request("sendVideo", payload)
 
+    async def send_document(
+        self,
+        chat_id: str,
+        document_url: str,
+        caption: str | None = None,
+        *,
+        reply_to_message_id: int | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "document": document_url,
+        }
+        if caption:
+            payload["caption"] = caption
+        if reply_to_message_id is not None:
+            payload["reply_to_message_id"] = reply_to_message_id
+        return await self._request("sendDocument", payload)
+
     async def send_media_group(
         self,
         chat_id: str,

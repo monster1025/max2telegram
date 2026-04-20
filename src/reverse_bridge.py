@@ -64,6 +64,11 @@ def _is_supported_telegram_message(message: dict[str, Any]) -> bool:
     if has_video:
         return True
 
+    for key in ("document", "audio", "voice", "animation", "sticker", "video_note"):
+        value = message.get(key)
+        if isinstance(value, dict) and value.get("file_id"):
+            return True
+
     return False
 
 
@@ -314,8 +319,13 @@ class TelegramToMaxBridge:
         reply_to = self._resolve_reply_to_max_id(max_chat_id=max_chat_id, message=messages[0])
 
         attachments: list[Any] = []
+        extra_links: list[str] = []
         for m in messages:
-            attachments.extend(await self._extract_attachments(m))
+            extracted, links = await self._extract_attachments(m)
+            attachments.extend(extracted)
+            extra_links.extend(links)
+
+        text = self._append_file_links(text=text, links=extra_links)
 
         if not text.strip() and not attachments:
             return
@@ -375,7 +385,8 @@ class TelegramToMaxBridge:
     ) -> None:
         raw_text = str(message.get("text") or message.get("caption") or "").strip()
         text = _format_forward_text(sender=message.get("from"), text=raw_text)
-        attachments = await self._extract_attachments(message)
+        attachments, extra_links = await self._extract_attachments(message)
+        text = self._append_file_links(text=text, links=extra_links)
         if not text.strip() and not attachments:
             return
 
@@ -430,8 +441,9 @@ class TelegramToMaxBridge:
         # reply_to в MAX — это id сообщения; если не нашли, просто отправляем без reply
         return mapped
 
-    async def _extract_attachments(self, message: dict[str, Any]) -> list[Any]:
+    async def _extract_attachments(self, message: dict[str, Any]) -> tuple[list[Any], list[str]]:
         attachments: list[Any] = []
+        file_links: list[str] = []
 
         # photo: массив размеров, берём последний (самый большой)
         photos = message.get("photo")
@@ -459,7 +471,29 @@ class TelegramToMaxBridge:
                 except Exception:
                     logger.exception("Cannot fetch Telegram video URL")
 
-        return attachments
+        for key in ("document", "audio", "voice", "animation", "sticker", "video_note"):
+            value = message.get(key)
+            if not isinstance(value, dict):
+                continue
+            file_id = str(value.get("file_id") or "")
+            if not file_id:
+                continue
+            try:
+                url = await self._telegram.get_file_url(file_id)
+                file_links.append(url)
+            except Exception:
+                logger.exception("Cannot fetch Telegram %s URL", key)
+
+        return attachments, file_links
+
+    @staticmethod
+    def _append_file_links(*, text: str, links: list[str]) -> str:
+        uniq_links = list(dict.fromkeys([str(link).strip() for link in links if str(link).strip()]))
+        if not uniq_links:
+            return text
+        links_block = "\n".join(f"- {url}" for url in uniq_links)
+        suffix = f"\n\n[Telegram files]\n{links_block}"
+        return f"{text}{suffix}" if text else suffix.strip()
 
     def _refresh_max_chat_cache(self) -> None:
         title_to_id: dict[str, int] = {}

@@ -110,7 +110,8 @@ class MaxToTelegramBridge:
             )
             return
 
-        if parsed.text.strip() and total_media == 0:
+        should_send_plain_text = total_media == 0 and not parsed.file_urls and bool(text.strip())
+        if should_send_plain_text:
             target_chat_id, sent = await self._send_with_migration_retry(
                 target_chat_id=target_chat_id,
                 max_chat_title_norm=normalized,
@@ -200,12 +201,13 @@ class MaxToTelegramBridge:
 
         if not sent_any:
             # Последняя страховка: гарантируем уведомление в Telegram даже для пустых/неизвестных payload.
+            fallback_text = text.strip() or self._build_fallback_unknown_notice(parsed)
             target_chat_id, sent = await self._send_with_migration_retry(
                 target_chat_id=target_chat_id,
                 max_chat_title_norm=normalized,
                 max_chat_title=parsed.chat_name,
                 send_action=lambda chat_id: self._telegram.send_text(
-                    chat_id, self._build_fallback_unknown_notice(parsed), reply_to_message_id=reply_telegram_mid
+                    chat_id, fallback_text, reply_to_message_id=reply_telegram_mid
                 ),
             )
             mid = sent.get("result", {}).get("message_id") if isinstance(sent.get("result"), dict) else None
@@ -359,7 +361,8 @@ class MaxToTelegramBridge:
                 if urls:
                     parsed.file_urls.extend(urls)
                 else:
-                    parsed.unknown_attachments.append(type(attach).__name__)
+                    if not self._is_forward_attach_like(attach):
+                        parsed.unknown_attachments.append(type(attach).__name__)
 
         # Убираем дубли URL, если парсер и enrich нашли одинаковые вложения.
         parsed.image_urls = list(dict.fromkeys(parsed.image_urls))
@@ -444,6 +447,17 @@ class MaxToTelegramBridge:
 
         walk(node)
         return list(dict.fromkeys(urls))
+
+    @staticmethod
+    def _is_forward_attach_like(attach: Any) -> bool:
+        name = type(attach).__name__.lower()
+        if "forward" in name or "share" in name or "quote" in name:
+            return True
+        if hasattr(attach, "__dict__"):
+            keys = {str(k).lower() for k in vars(attach).keys()}
+            if {"forward", "forwarded", "forwards", "link", "message", "messages", "origin", "payload"} & keys:
+                return True
+        return False
 
     @staticmethod
     def _append_unknown_attachment_notice(*, parsed: ParsedMessage, text: str) -> str:

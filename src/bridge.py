@@ -19,9 +19,9 @@ class MaxToTelegramBridge:
         self._storage = storage
 
     async def forward_message(self, max_message: Any) -> None:
-        if self._is_self_message(max_message):
-            logger.debug("Skip self message %s/%s", getattr(max_message, "chat_id", "?"), getattr(max_message, "id", "?"))
-            return
+        #if self._is_self_message(max_message):
+        #    logger.debug("Skip self message %s/%s", getattr(max_message, "chat_id", "?"), getattr(max_message, "id", "?"))
+        #    return
 
         parsed = parse_message(max_message)
         parsed = await self._enrich_from_max(max_message, parsed)

@@ -5,7 +5,7 @@ from typing import Any
 from max_parser import parse_message
 from models import ParsedMessage
 from pymax import MaxClient
-from pymax.types import PhotoAttach, VideoAttach
+from pymax.types import AudioAttach, FileAttach, Message, PhotoAttach, StickerAttach, VideoAttach
 from storage import BridgeStorage
 from telegram_api import TelegramApiError, TelegramClient
 
@@ -340,29 +340,24 @@ class MaxToTelegramBridge:
         except Exception:
             logger.debug("Cannot resolve chat title", exc_info=True)
 
-        attaches = getattr(max_message, "attaches", None) or []
-        for attach in attaches:
-            if isinstance(attach, PhotoAttach):
-                parsed.image_urls.extend(self._extract_photo_urls(attach))
-            elif isinstance(attach, VideoAttach):
-                try:
-                    video = await self._max_client.get_video_by_id(
-                        chat_id=max_message.chat_id,
-                        message_id=max_message.id,
-                        video_id=attach.video_id,
-                    )
-                    video_url = getattr(video, "url", None)
-                    if video_url:
-                        parsed.video_urls.append(str(video_url))
-                except Exception:
-                    logger.exception("Cannot resolve video URL from Max")
-            else:
-                urls = self._extract_any_urls(attach)
-                if urls:
-                    parsed.file_urls.extend(urls)
-                else:
-                    if not self._is_forward_attach_like(attach):
-                        parsed.unknown_attachments.append(type(attach).__name__)
+        await self._collect_message_attachments(
+            message=max_message,
+            parsed=parsed,
+            source_tag="root",
+        )
+
+        link = getattr(max_message, "link", None)
+        linked_message = getattr(link, "message", None)
+        if linked_message is not None:
+            if not (parsed.text or "").strip():
+                linked_text = str(getattr(linked_message, "text", "") or "").strip()
+                if linked_text:
+                    parsed.text = linked_text
+            await self._collect_message_attachments(
+                message=linked_message,
+                parsed=parsed,
+                source_tag="forward",
+            )
 
         # Убираем дубли URL, если парсер и enrich нашли одинаковые вложения.
         parsed.image_urls = list(dict.fromkeys(parsed.image_urls))
@@ -370,6 +365,127 @@ class MaxToTelegramBridge:
         parsed.file_urls = list(dict.fromkeys(parsed.file_urls))
         parsed.unknown_attachments = list(dict.fromkeys(parsed.unknown_attachments))
         return parsed
+
+    async def _collect_message_attachments(
+        self,
+        *,
+        message: Any,
+        parsed: ParsedMessage,
+        source_tag: str,
+    ) -> None:
+        attaches = getattr(message, "attaches", None) or []
+        message_chat_id = getattr(message, "chat_id", None)
+        message_id = getattr(message, "id", None)
+        if message_chat_id is None:
+            message_chat_id = parsed.chat_id
+
+        for attach in attaches:
+            if isinstance(attach, PhotoAttach):
+                parsed.image_urls.extend(self._extract_photo_urls(attach))
+                continue
+
+            if isinstance(attach, VideoAttach):
+                try:
+                    video = await self._max_client.get_video_by_id(
+                        chat_id=message_chat_id,
+                        message_id=message_id,
+                        video_id=attach.video_id,
+                    )
+                    video_url = getattr(video, "url", None)
+                    if video_url:
+                        parsed.video_urls.append(str(video_url))
+                except Exception:
+                    logger.exception("Cannot resolve video URL from Max (%s)", source_tag)
+                continue
+
+            if isinstance(attach, FileAttach):
+                resolved = await self._resolve_file_attach_url(
+                    message_chat_id=message_chat_id,
+                    message_id=message_id,
+                    attach=attach,
+                )
+                if resolved:
+                    parsed.file_urls.append(resolved)
+                else:
+                    fallback = str(getattr(attach, "name", "") or "").strip()
+                    if fallback:
+                        parsed.text = self._append_missing_file_note(parsed.text, fallback)
+                    else:
+                        parsed.unknown_attachments.append(type(attach).__name__)
+                continue
+
+            if isinstance(attach, AudioAttach):
+                audio_url = str(getattr(attach, "url", "") or "").strip()
+                if audio_url:
+                    parsed.file_urls.append(audio_url)
+                else:
+                    parsed.unknown_attachments.append(type(attach).__name__)
+                continue
+
+            if isinstance(attach, StickerAttach):
+                sticker_url = str(getattr(attach, "url", "") or "").strip()
+                if sticker_url:
+                    parsed.image_urls.append(sticker_url)
+                else:
+                    parsed.unknown_attachments.append(type(attach).__name__)
+                continue
+
+            # Fallback на случай сырого Attach/нестандартного типа:
+            if await self._resolve_generic_file_attach(
+                message_chat_id=message_chat_id,
+                message_id=message_id,
+                attach=attach,
+                parsed=parsed,
+            ):
+                continue
+
+            urls = self._extract_any_urls(attach)
+            if urls:
+                parsed.file_urls.extend(urls)
+                continue
+
+            parsed.unknown_attachments.append(type(attach).__name__)
+
+    async def _resolve_file_attach_url(self, *, message_chat_id: Any, message_id: Any, attach: FileAttach) -> str | None:
+        file_id = getattr(attach, "file_id", None)
+        if file_id is None or message_id is None:
+            return None
+        try:
+            file_info = await self._max_client.get_file_by_id(
+                chat_id=message_chat_id,
+                message_id=message_id,
+                file_id=file_id,
+            )
+            url = getattr(file_info, "url", None)
+            return str(url) if url else None
+        except Exception:
+            logger.exception("Cannot resolve file URL from Max (file_id=%s)", file_id)
+            return None
+
+    async def _resolve_generic_file_attach(
+        self,
+        *,
+        message_chat_id: Any,
+        message_id: Any,
+        attach: Any,
+        parsed: ParsedMessage,
+    ) -> bool:
+        file_id = getattr(attach, "file_id", None)
+        if file_id is None or message_id is None:
+            return False
+        try:
+            file_info = await self._max_client.get_file_by_id(
+                chat_id=message_chat_id,
+                message_id=message_id,
+                file_id=file_id,
+            )
+            url = getattr(file_info, "url", None)
+            if url:
+                parsed.file_urls.append(str(url))
+                return True
+        except Exception:
+            logger.debug("Cannot resolve generic file attach from Max", exc_info=True)
+        return False
 
     def _is_self_message(self, max_message: Any) -> bool:
         sender = getattr(max_message, "sender", None)
@@ -458,6 +574,14 @@ class MaxToTelegramBridge:
             if {"forward", "forwarded", "forwards", "link", "message", "messages", "origin", "payload"} & keys:
                 return True
         return False
+
+    @staticmethod
+    def _append_missing_file_note(current_text: str, file_name: str) -> str:
+        text = (current_text or "").strip()
+        note = f"[MAX forwarded file without direct URL] {file_name}"
+        if not text:
+            return note
+        return f"{text}\n{note}"
 
     @staticmethod
     def _append_unknown_attachment_notice(*, parsed: ParsedMessage, text: str) -> str:

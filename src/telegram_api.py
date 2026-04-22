@@ -112,17 +112,20 @@ class TelegramClient:
         self,
         chat_id: str,
         document_url: str,
+        file_name: str | None = None,
         caption: str | None = None,
         *,
         reply_to_message_id: int | None = None,
     ) -> dict[str, Any]:
         # Telegram часто не может скачать URL, которые доступны только клиенту MAX.
         # Поэтому скачиваем сами во временный файл и отправляем как multipart upload.
-        tmp_path = await self._download_to_temp(document_url)
+        safe_name = self._sanitize_filename(file_name) if file_name else None
+        tmp_path = await self._download_to_temp(document_url, preferred_filename=safe_name)
         try:
             return await self.send_document_file(
                 chat_id=chat_id,
                 file_path=tmp_path,
+                upload_filename=safe_name,
                 caption=caption,
                 reply_to_message_id=reply_to_message_id,
             )
@@ -137,6 +140,7 @@ class TelegramClient:
         *,
         chat_id: str,
         file_path: str,
+        upload_filename: str | None = None,
         caption: str | None = None,
         reply_to_message_id: int | None = None,
     ) -> dict[str, Any]:
@@ -146,7 +150,7 @@ class TelegramClient:
         if reply_to_message_id is not None:
             payload["reply_to_message_id"] = str(int(reply_to_message_id))
 
-        filename = pathlib.Path(file_path).name
+        filename = upload_filename or pathlib.Path(file_path).name
 
         def _do_request() -> requests.Response:
             with open(file_path, "rb") as f:
@@ -327,8 +331,8 @@ class TelegramClient:
             )
         return data
 
-    async def _download_to_temp(self, url: str) -> str:
-        filename = self._infer_filename_from_url(url) or "max-file"
+    async def _download_to_temp(self, url: str, preferred_filename: str | None = None) -> str:
+        filename = preferred_filename or self._infer_filename_from_url(url) or "max-file"
         tmp_dir = self._ensure_tmp_root()
         fd, path = tempfile.mkstemp(prefix="max2tg_", suffix=f"_{filename}", dir=tmp_dir)
         os.close(fd)
@@ -370,3 +374,11 @@ class TelegramClient:
         except Exception:
             return None
         return None
+
+    @staticmethod
+    def _sanitize_filename(name: str | None) -> str | None:
+        if not name:
+            return None
+        bad = '<>:"/\\|?*'
+        cleaned = "".join("_" if ch in bad else ch for ch in str(name)).strip().strip(".")
+        return cleaned or None

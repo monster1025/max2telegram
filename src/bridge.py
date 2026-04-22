@@ -178,6 +178,7 @@ class MaxToTelegramBridge:
 
         for index, file_url in enumerate(parsed.file_urls):
             caption = text if not sent_any and index == 0 else None
+            file_name = parsed.file_names_by_url.get(file_url)
             target_chat_id, sent = await self._send_with_migration_retry(
                 target_chat_id=target_chat_id,
                 max_chat_title_norm=normalized,
@@ -185,6 +186,7 @@ class MaxToTelegramBridge:
                 send_action=lambda chat_id: self._telegram.send_document(
                     chat_id,
                     file_url,
+                    file_name=file_name,
                     caption=caption,
                     reply_to_message_id=reply_telegram_mid if not sent_any and index == 0 else None,
                 ),
@@ -366,6 +368,13 @@ class MaxToTelegramBridge:
         parsed.image_urls = list(dict.fromkeys(parsed.image_urls))
         parsed.video_urls = list(dict.fromkeys(parsed.video_urls))
         parsed.file_urls = list(dict.fromkeys(parsed.file_urls))
+        parsed.file_names_by_url = {
+            url: name for url, name in parsed.file_names_by_url.items() if url in parsed.file_urls and name
+        }
+        if parsed.file_urls:
+            parsed.unknown_attachments = [
+                x for x in parsed.unknown_attachments if not self._is_file_unknown_marker(x)
+            ]
         parsed.unknown_attachments = list(dict.fromkeys(parsed.unknown_attachments))
         return parsed
 
@@ -409,6 +418,9 @@ class MaxToTelegramBridge:
                 )
                 if resolved:
                     parsed.file_urls.append(resolved)
+                    file_name = str(getattr(attach, "name", "") or "").strip()
+                    if file_name:
+                        parsed.file_names_by_url[resolved] = file_name
                 else:
                     fallback = str(getattr(attach, "name", "") or "").strip()
                     if fallback:
@@ -484,7 +496,11 @@ class MaxToTelegramBridge:
             )
             url = getattr(file_info, "url", None)
             if url:
-                parsed.file_urls.append(str(url))
+                resolved = str(url)
+                parsed.file_urls.append(resolved)
+                file_name = str(getattr(attach, "name", "") or "").strip()
+                if file_name:
+                    parsed.file_names_by_url[resolved] = file_name
                 return True
         except Exception:
             logger.debug("Cannot resolve generic file attach from Max", exc_info=True)
@@ -604,3 +620,8 @@ class MaxToTelegramBridge:
         )
         unknown = ", ".join(parsed.unknown_attachments[:5]) if parsed.unknown_attachments else "unknown"
         return f"{base}\n\n[!] Неизвестный или пустой тип сообщения из MAX (attachments={unknown})."
+
+    @staticmethod
+    def _is_file_unknown_marker(value: str) -> bool:
+        normalized = str(value or "").strip().casefold()
+        return normalized in {"attachtype.file", "fileattach", "file"}

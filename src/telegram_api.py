@@ -1,5 +1,9 @@
 import asyncio
 import json
+import os
+import pathlib
+import tempfile
+import urllib.parse
 from typing import Any
 
 import requests
@@ -39,6 +43,7 @@ class TelegramClient:
         self._timeout = timeout
         self._chat_title_to_id: dict[str, str] = {}
         self._me: dict[str, Any] | None = None
+        self._tmp_root: str | None = None
 
     @property
     def fallback_user_id(self) -> str:
@@ -111,15 +116,50 @@ class TelegramClient:
         *,
         reply_to_message_id: int | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "chat_id": chat_id,
-            "document": document_url,
-        }
+        # Telegram часто не может скачать URL, которые доступны только клиенту MAX.
+        # Поэтому скачиваем сами во временный файл и отправляем как multipart upload.
+        tmp_path = await self._download_to_temp(document_url)
+        try:
+            return await self.send_document_file(
+                chat_id=chat_id,
+                file_path=tmp_path,
+                caption=caption,
+                reply_to_message_id=reply_to_message_id,
+            )
+        finally:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    async def send_document_file(
+        self,
+        *,
+        chat_id: str,
+        file_path: str,
+        caption: str | None = None,
+        reply_to_message_id: int | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"chat_id": str(chat_id)}
         if caption:
             payload["caption"] = caption
         if reply_to_message_id is not None:
-            payload["reply_to_message_id"] = reply_to_message_id
-        return await self._request("sendDocument", payload)
+            payload["reply_to_message_id"] = str(int(reply_to_message_id))
+
+        filename = pathlib.Path(file_path).name
+
+        def _do_request() -> requests.Response:
+            with open(file_path, "rb") as f:
+                files = {"document": (filename, f)}
+                return requests.post(
+                    f"{self._base_url}/sendDocument",
+                    data=payload,
+                    files=files,
+                    timeout=self._timeout,
+                )
+
+        response = await asyncio.to_thread(_do_request)
+        return self._parse_response(method="sendDocument", response=response)
 
     async def send_media_group(
         self,
@@ -249,6 +289,9 @@ class TelegramClient:
             return requests.post(url, json=payload, timeout=self._timeout)
 
         response = await asyncio.to_thread(_do_request)
+        return self._parse_response(method=method, response=response)
+
+    def _parse_response(self, *, method: str, response: requests.Response) -> dict[str, Any]:
         if response.status_code >= 400:
             error_code: int | None = None
             description: str | None = None
@@ -283,3 +326,47 @@ class TelegramClient:
                 parameters=data.get("parameters") if isinstance(data.get("parameters"), dict) else None,
             )
         return data
+
+    async def _download_to_temp(self, url: str) -> str:
+        filename = self._infer_filename_from_url(url) or "max-file"
+        tmp_dir = self._ensure_tmp_root()
+        fd, path = tempfile.mkstemp(prefix="max2tg_", suffix=f"_{filename}", dir=tmp_dir)
+        os.close(fd)
+
+        def _do_download() -> None:
+            with requests.get(url, stream=True, timeout=self._timeout) as r:
+                r.raise_for_status()
+                with open(path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 256):
+                        if chunk:
+                            f.write(chunk)
+
+        try:
+            await asyncio.to_thread(_do_download)
+            return path
+        except Exception:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            raise
+
+    def _ensure_tmp_root(self) -> str:
+        if self._tmp_root and os.path.isdir(self._tmp_root):
+            return self._tmp_root
+        self._tmp_root = tempfile.mkdtemp(prefix="max2tg_")
+        return self._tmp_root
+
+    @staticmethod
+    def _infer_filename_from_url(url: str) -> str | None:
+        try:
+            parsed = urllib.parse.urlparse(url)
+            name = pathlib.Path(parsed.path).name
+            if name and name not in {"/", ".", ".."}:
+                # Windows-safe filename (и вообще безопаснее для FS).
+                bad = '<>:"/\\|?*'
+                cleaned = "".join("_" if ch in bad else ch for ch in name).strip().strip(".")
+                return cleaned or None
+        except Exception:
+            return None
+        return None

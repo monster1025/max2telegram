@@ -349,7 +349,10 @@ class MaxToTelegramBridge:
         link = getattr(max_message, "link", None)
         linked_message = getattr(link, "message", None)
         if linked_message is not None:
-            if not (parsed.text or "").strip():
+            # Для reply не копируем текст исходного сообщения в тело:
+            # иначе получаем дубль (цитата + тот же текст как новое сообщение).
+            is_reply = bool(parsed.reply_to_max_message_id)
+            if not is_reply and not (parsed.text or "").strip():
                 linked_text = str(getattr(linked_message, "text", "") or "").strip()
                 if linked_text:
                     parsed.text = linked_text

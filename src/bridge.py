@@ -358,11 +358,14 @@ class MaxToTelegramBridge:
                 linked_text = str(getattr(linked_message, "text", "") or "").strip()
                 if linked_text:
                     parsed.text = linked_text
-            await self._collect_message_attachments(
-                message=linked_message,
-                parsed=parsed,
-                source_tag="forward",
-            )
+            # Для reply нельзя переносить вложения linked_message:
+            # это исходное сообщение, и его медиа не должны отправляться повторно.
+            if not is_reply:
+                await self._collect_message_attachments(
+                    message=linked_message,
+                    parsed=parsed,
+                    source_tag="forward",
+                )
 
         # Убираем дубли URL, если парсер и enrich нашли одинаковые вложения.
         parsed.image_urls = list(dict.fromkeys(parsed.image_urls))

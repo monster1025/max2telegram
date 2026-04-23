@@ -204,11 +204,7 @@ class TelegramToMaxBridge:
 
         chat_title = _telegram_chat_title(chat)
         normalized = _normalize_title(chat_title)
-        if not normalized:
-            logger.error("Telegram chat without title/username, skip (chat=%s)", chat)
-            return
-
-        max_chat_id = self._resolve_max_chat_id_by_title(normalized)
+        max_chat_id = self._resolve_max_chat_id(message=message, normalized_title=normalized, chat=chat)
         if max_chat_id is None:
             # требование: если в MAX нет канала/группы — ошибка и не пересылать
             logger.error("MAX чат с названием '%s' не найден — сообщение не пересылаю", chat_title)
@@ -440,6 +436,55 @@ class TelegramToMaxBridge:
         )
         # reply_to в MAX — это id сообщения; если не нашли, просто отправляем без reply
         return mapped
+
+    def _resolve_max_chat_id(
+        self,
+        *,
+        message: dict[str, Any],
+        normalized_title: str,
+        chat: dict[str, Any],
+    ) -> int | None:
+        # При reply маршрутизируем по исходному сообщению (контекст диалога),
+        # чтобы не зависеть от username/title Telegram-чата.
+        from_reply = self._resolve_max_chat_id_from_reply(message)
+        if from_reply is not None:
+            return from_reply
+
+        if not normalized_title:
+            logger.error("Telegram chat without title/username, skip (chat=%s)", chat)
+            return None
+
+        return self._resolve_max_chat_id_by_title(normalized_title)
+
+    def _resolve_max_chat_id_from_reply(self, message: dict[str, Any]) -> int | None:
+        reply = message.get("reply_to_message")
+        if not isinstance(reply, dict):
+            return None
+        reply_mid = reply.get("message_id")
+        if reply_mid is None:
+            return None
+
+        chat = message.get("chat")
+        if not isinstance(chat, dict):
+            return None
+        telegram_chat_id = str(chat.get("id"))
+
+        max_chat_id = self._storage.get_max_chat_id_for_telegram(
+            telegram_chat_id=telegram_chat_id,
+            telegram_message_id=str(reply_mid),
+        )
+        if not max_chat_id:
+            return None
+        try:
+            return int(max_chat_id)
+        except ValueError:
+            logger.warning(
+                "Invalid max_chat_id '%s' in mapping for Telegram %s/%s",
+                max_chat_id,
+                telegram_chat_id,
+                reply_mid,
+            )
+            return None
 
     async def _extract_attachments(self, message: dict[str, Any]) -> tuple[list[Any], list[str]]:
         attachments: list[Any] = []

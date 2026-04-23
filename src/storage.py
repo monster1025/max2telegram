@@ -105,6 +105,22 @@ class BridgeStorage:
                 return None
             return str(row[0])
 
+    def get_max_chat_id_for_telegram(
+        self, *, telegram_chat_id: str, telegram_message_id: str
+    ) -> str | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                """
+                SELECT max_chat_id
+                FROM message_mapping
+                WHERE telegram_chat_id = ? AND telegram_message_id = ?
+                """,
+                (telegram_chat_id, telegram_message_id),
+            ).fetchone()
+            if not row:
+                return None
+            return str(row[0])
+
     def get_telegram_message_id_for_max(
         self, *, telegram_chat_id: str, max_chat_id: str, max_message_id: str
     ) -> str | None:

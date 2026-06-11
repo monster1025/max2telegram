@@ -1,0 +1,245 @@
+import asyncio
+
+import aiohttp
+import structlog
+from aiogram.types import (
+  FSInputFile,
+  InputMediaDocument,
+  InputMediaPhoto,
+  InputMediaVideo,
+  ReactionTypeEmoji,
+)
+
+from app.config import Settings
+from app.media_transfer import cleanup_paths, download_media_item, resolve_file_name, tmp_dir
+from app.max_layer.client_holder import MaxClientHolder
+from app.max_layer.formatter import format_max_text
+from app.models.domain import ChatMapping, MaxIncomingMessage
+from app.models.tasks import (
+  Max2TgTask,
+  MediaItem,
+  NotifyFallbackTask,
+  SetReactionTask,
+)
+from app.queue.protocols import QueuePort
+from app.storage.protocols import StoragePort
+from app.telegram_layer.bot_holder import BotHolder
+from app.topic_locks import TopicLockRegistry
+
+logger = structlog.get_logger(__name__)
+
+
+class TelegramWorker:
+  def __init__(
+    self,
+    settings: Settings,
+    bot_holder: BotHolder,
+    max_holder: MaxClientHolder,
+    queue: QueuePort,
+    storage: StoragePort,
+    topic_locks: TopicLockRegistry,
+  ) -> None:
+    self._settings = settings
+    self._bot_holder = bot_holder
+    self._max_holder = max_holder
+    self._queue = queue
+    self._storage = storage
+    self._topic_locks = topic_locks
+    self._running = True
+    self._tmp_dir = tmp_dir(self._settings.data_dir)
+
+  async def run(self) -> None:
+    logger.info("tg_worker_started")
+    while self._running:
+      task = await self._queue.dequeue_max2tg(timeout=5)
+      if task is None:
+        continue
+      logger.info("tg_worker_task_received", task_kind=task.kind)
+      try:
+        if isinstance(task, Max2TgTask):
+          await self._send_to_tg(task)
+        elif isinstance(task, SetReactionTask):
+          await self._set_reaction(task)
+        elif isinstance(task, NotifyFallbackTask):
+          await self._notify_fallback(task)
+      except Exception as exc:
+        logger.exception("tg_worker_failed", task_kind=task.kind)
+        if isinstance(task, Max2TgTask):
+          await self._queue.enqueue_max2tg(
+            NotifyFallbackTask(
+              title="Ошибка отправки в Telegram",
+              details=f"max_message_id={task.max_message_id}: {exc}",
+            )
+          )
+      await asyncio.sleep(self._settings.tg_rate_limit_delay_sec)
+
+  async def _send_to_tg(self, task: Max2TgTask) -> None:
+    bot = await self._bot_holder.wait_bot()
+    logger.debug(
+      "tg_worker_send_start",
+      max_chat_id=task.max_chat_id,
+      max_message_id=task.max_message_id,
+      needs_new_topic=task.needs_new_topic,
+      media_count=len(task.media),
+    )
+
+    async with self._topic_locks.lock(task.max_chat_id):
+      mapping = await self._storage.get_mapping_by_max_chat(task.max_chat_id)
+      if mapping is None:
+        topic = await bot.create_forum_topic(
+          chat_id=self._settings.tg_forum_channel_id,
+          name=task.chat_title[:128],
+        )
+        mapping = ChatMapping(
+          max_chat_id=task.max_chat_id,
+          tg_chat_id=self._settings.tg_forum_channel_id,
+          tg_thread_id=topic.message_thread_id,
+          display_name=task.chat_title,
+          is_dm=task.is_dm,
+        )
+        await self._storage.save_mapping(mapping)
+        logger.info(
+          "tg_topic_created",
+          max_chat_id=task.max_chat_id,
+          thread_id=topic.message_thread_id,
+          title=task.chat_title,
+        )
+      else:
+        logger.debug(
+          "tg_topic_reused",
+          max_chat_id=task.max_chat_id,
+          thread_id=mapping.tg_thread_id,
+        )
+
+    assert mapping is not None
+    thread_id = mapping.tg_thread_id
+
+    formatted = format_max_text(
+      MaxIncomingMessage(
+        max_chat_id=task.max_chat_id,
+        max_message_id=task.max_message_id,
+        text=task.text,
+        sender_id=None,
+        sender_name=task.sender_name,
+        is_dm=task.is_dm,
+        chat_title=task.chat_title,
+        reply_to_max_message_id=None,
+        media=[],
+      )
+    )
+
+    sent = await self._dispatch_content(
+      bot, thread_id, formatted, task.media, task.reply_to_tg_message_id
+    )
+    if sent is None:
+      raise RuntimeError("Telegram API returned no message")
+
+    await self._storage.save_message_link(
+      task.max_chat_id,
+      task.max_message_id,
+      mapping.tg_chat_id,
+      mapping.tg_thread_id,
+      sent.message_id,
+    )
+    logger.info(
+      "tg_message_sent",
+      max_message_id=task.max_message_id,
+      tg_message_id=sent.message_id,
+      thread_id=thread_id,
+    )
+
+  async def _dispatch_content(
+    self,
+    bot,
+    thread_id: int,
+    text: str,
+    media: list[MediaItem],
+    reply_to: int | None,
+  ):
+    chat_id = self._settings.tg_forum_channel_id
+    kwargs = {
+      "chat_id": chat_id,
+      "message_thread_id": thread_id,
+      "reply_to_message_id": reply_to,
+    }
+
+    if not media:
+      return await bot.send_message(text=text or " ", **kwargs)
+
+    downloaded: list = []
+    try:
+      max_client = self._max_holder.client
+      async with aiohttp.ClientSession() as session:
+        uploads: list[tuple[MediaItem, FSInputFile]] = []
+        for item in media:
+          path = await download_media_item(
+            bot,
+            session,
+            item,
+            self._tmp_dir,
+            max_client=max_client,
+          )
+          if path is None:
+            logger.warning(
+              "tg_worker_media_skipped",
+              kind=item.kind,
+              file_id=item.file_id,
+              url=item.url,
+            )
+            continue
+          downloaded.append(path)
+          uploads.append(
+            (item, FSInputFile(path, filename=resolve_file_name(item)))
+          )
+
+        if not uploads:
+          fallback = text or "[Telegram files]"
+          return await bot.send_message(text=fallback, **kwargs)
+
+        if len(uploads) == 1:
+          item, upload = uploads[0]
+          if item.kind == "photo":
+            return await bot.send_photo(
+              photo=upload, caption=text or None, **kwargs
+            )
+          if item.kind == "video":
+            return await bot.send_video(
+              video=upload, caption=text or None, **kwargs
+            )
+          return await bot.send_document(
+            document=upload, caption=text or None, **kwargs
+          )
+
+        group = []
+        for idx, (item, upload) in enumerate(uploads):
+          caption = text if idx == 0 else None
+          if item.kind == "photo":
+            group.append(InputMediaPhoto(media=upload, caption=caption))
+          elif item.kind == "video":
+            group.append(InputMediaVideo(media=upload, caption=caption))
+          else:
+            group.append(InputMediaDocument(media=upload, caption=caption))
+
+        messages = await bot.send_media_group(
+          chat_id=chat_id,
+          message_thread_id=thread_id,
+          media=group,
+        )
+        return messages[0]
+    finally:
+      cleanup_paths(downloaded)
+
+  async def _set_reaction(self, task: SetReactionTask) -> None:
+    bot = await self._bot_holder.wait_bot()
+    await bot.set_message_reaction(
+      chat_id=task.tg_chat_id,
+      message_id=task.tg_message_id,
+      reaction=[ReactionTypeEmoji(emoji=task.emoji)],
+    )
+    logger.info("tg_reaction_set", message_id=task.tg_message_id)
+
+  async def _notify_fallback(self, task: NotifyFallbackTask) -> None:
+    bot = await self._bot_holder.wait_bot()
+    text = f"⚠️ {task.title}\n\n{task.details}"
+    await bot.send_message(chat_id=self._settings.fallback_user_id, text=text)
+    logger.warning("fallback_notified", title=task.title)

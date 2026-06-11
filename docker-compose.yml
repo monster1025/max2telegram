@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: always
+    volumes:
+      - ./data/redis:/data
+    command: redis-server --appendonly yes
+
+  app:
+    build: .
+    restart: always
+    depends_on:
+      - redis
+    environment:
+      - MAX_TOKEN=${MAX_TOKEN}
+      - MAX_DEVICE_ID=${MAX_DEVICE_ID}
+      - TG_BOT_TOKEN=${TG_BOT_TOKEN}
+      - TG_FORUM_CHANNEL_ID=${TG_FORUM_CHANNEL_ID}
+      - FALLBACK_USER_ID=${FALLBACK_USER_ID}
+      - DATABASE_URL=sqlite+aiosqlite:///app/data/bridge.db
+      - REDIS_URL=redis://redis:6379/0
+      - TG_RATE_LIMIT_DELAY_SEC=3.5
+      - MAX_RATE_LIMIT_DELAY_SEC=1.0
+      - MAX_RECONNECT_FETCH_LIMIT=50
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./data:/app/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

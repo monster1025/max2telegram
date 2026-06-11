@@ -3,7 +3,7 @@ from typing import Any
 import structlog
 from pymax.types.domain.message import Message as MaxMessage
 
-from app.models.domain import MaxIncomingMessage
+from app.models.domain import MaxChatMeta, MaxIncomingMessage
 
 logger = structlog.get_logger(__name__)
 
@@ -211,14 +211,72 @@ async def resolve_media(client, message: MaxMessage) -> list[dict]:
   return items
 
 
-def build_chat_title(chat, ls_prefix: str) -> tuple[str, bool]:
+def _pick_image_url(*values: str | None) -> str | None:
+  for value in values:
+    if value and value.strip():
+      return value.strip()
+  return None
+
+
+def _chat_icon_url(chat) -> str | None:
+  return _pick_image_url(
+    getattr(chat, "base_icon_url", None),
+    getattr(chat, "base_raw_icon_url", None),
+  )
+
+
+def _user_icon_url(user) -> str | None:
+  return _pick_image_url(
+    getattr(user, "base_url", None),
+    getattr(user, "base_raw_url", None),
+  )
+
+
+async def resolve_chat_icon_url(
+  client,
+  chat,
+  my_user_id: int | None,
+) -> str | None:
   is_dm = bool(getattr(chat, "is_dialog", False) or chat.type == "DIALOG")
   if is_dm:
-    title = chat.title or "Контакт"
-    if not title.startswith(ls_prefix.strip()):
-      title = f"{ls_prefix}{title}"
-    return title, True
-  return chat.title or f"Чат {chat.id}", False
+    for user_id in chat.participants or {}:
+      if my_user_id and user_id == my_user_id:
+        continue
+      try:
+        user = await client.get_user(user_id)
+        icon_url = _user_icon_url(user)
+        if icon_url:
+          return icon_url
+      except Exception:
+        logger.debug(
+          "max_dm_icon_lookup_failed",
+          chat_id=chat.id,
+          user_id=user_id,
+        )
+    return None
+
+  return _chat_icon_url(chat)
+
+
+def extract_chat_meta(chat, ls_prefix: str) -> MaxChatMeta:
+  is_dm = bool(getattr(chat, "is_dialog", False) or chat.type == "DIALOG")
+  chat_name = chat.title or ("Контакт" if is_dm else f"Чат {chat.id}")
+  topic_title = chat_name
+  if is_dm and not topic_title.startswith(ls_prefix.strip()):
+    topic_title = f"{ls_prefix}{topic_title}"
+  return MaxChatMeta(
+    topic_title=topic_title,
+    chat_name=chat_name,
+    is_dm=is_dm,
+    icon_url=_chat_icon_url(chat),
+    participants_count=getattr(chat, "participants_count", 0) or 0,
+    link=getattr(chat, "link", None),
+  )
+
+
+def build_chat_title(chat, ls_prefix: str) -> tuple[str, bool]:
+  meta = extract_chat_meta(chat, ls_prefix)
+  return meta.topic_title, meta.is_dm
 
 
 def resolve_sender_name(user) -> str:

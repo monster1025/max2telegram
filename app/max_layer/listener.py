@@ -1,16 +1,18 @@
 import asyncio
 from pathlib import Path
+from uuid import uuid4
+
+import aiohttp
 
 import structlog
 from pymax import ExtraConfig, Message, WebClient
-from pymax.types.domain.enums import ChatType
-
 from app.config import Settings
-from app.media_transfer import download_max_media, tmp_dir
+from app.media_transfer import download_max_image_url, download_max_media, tmp_dir
 from app.max_layer.client_holder import MaxClientHolder
 from app.max_layer.formatter import (
-  build_chat_title,
+  extract_chat_meta,
   extract_forwarded_content,
+  resolve_chat_icon_url,
   format_forwarded_text,
   get_reply_target,
   resolve_media,
@@ -85,6 +87,21 @@ class MaxListener:
           chat_id=message.chat_id,
           message_id=message.id,
         )
+
+  async def _download_chat_icon(self, icon_url: str | None) -> str | None:
+    if not icon_url:
+      return None
+    dest = self._tmp_dir / f"chat_icon_{uuid4().hex}.jpg"
+    try:
+      async with aiohttp.ClientSession() as session:
+        if not await download_max_image_url(session, icon_url, dest):
+          logger.warning("max_chat_icon_download_failed", url=icon_url)
+          return None
+      return str(dest)
+    except Exception:
+      logger.exception("max_chat_icon_download_failed", url=icon_url)
+      dest.unlink(missing_ok=True)
+      return None
 
   async def run(self) -> None:
     self._client = self.build_client()
@@ -169,11 +186,14 @@ class MaxListener:
       logger.exception("max_chat_fetch_failed", chat_id=message.chat_id)
       return
 
-    is_dm = chat.type == ChatType.DIALOG or getattr(chat, "is_dialog", False)
-    chat_title, _ = build_chat_title(chat, self._settings.ls_topic_prefix)
+    chat_meta = extract_chat_meta(chat, self._settings.ls_topic_prefix)
+    chat_icon_url = await resolve_chat_icon_url(
+      client, chat, self._holder.my_user_id
+    )
+    chat_icon_local_path = await self._download_chat_icon(chat_icon_url)
 
     sender_name: str | None = None
-    if not is_dm and message.sender:
+    if not chat_meta.is_dm and message.sender:
       try:
         user = await client.get_user(message.sender)
         sender_name = resolve_sender_name(user)
@@ -207,7 +227,7 @@ class MaxListener:
       is_forward=forwarded is not None,
       text_len=len(effective_text),
       media_count=len(media),
-      is_dm=is_dm,
+      is_dm=chat_meta.is_dm,
       reply_to=reply_to,
     )
 
@@ -217,8 +237,13 @@ class MaxListener:
       text=effective_text,
       sender_id=message.sender,
       sender_name=sender_name,
-      is_dm=is_dm,
-      chat_title=chat_title,
+      is_dm=chat_meta.is_dm,
+      chat_title=chat_meta.topic_title,
+      chat_name=chat_meta.chat_name,
+      chat_icon_url=chat_icon_url,
+      chat_icon_local_path=chat_icon_local_path,
+      participants_count=chat_meta.participants_count,
+      max_chat_link=chat_meta.link,
       reply_to_max_message_id=reply_to,
       media=media,
     )

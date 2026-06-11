@@ -11,6 +11,16 @@ class ChatMapping:
 
 
 @dataclass(slots=True)
+class MaxChatMeta:
+  topic_title: str
+  chat_name: str
+  is_dm: bool
+  icon_url: str | None
+  participants_count: int
+  link: str | None
+
+
+@dataclass(slots=True)
 class MaxIncomingMessage:
   max_chat_id: int
   max_message_id: int
@@ -19,6 +29,11 @@ class MaxIncomingMessage:
   sender_name: str | None
   is_dm: bool
   chat_title: str
+  chat_name: str
+  chat_icon_url: str | None
+  chat_icon_local_path: str | None
+  participants_count: int
+  max_chat_link: str | None
   reply_to_max_message_id: int | None
   media: list[dict]
 

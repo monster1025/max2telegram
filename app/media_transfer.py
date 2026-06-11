@@ -44,6 +44,43 @@ def resolve_file_name(item: MediaItem | dict) -> str:
   return _default_file_name(kind)
 
 
+def max_image_url_candidates(url: str) -> list[str]:
+  normalized = url.strip()
+  if not normalized:
+    return []
+  if normalized.startswith("//"):
+    normalized = f"https:{normalized}"
+  candidates = [normalized]
+  if "i.oneme.ru" in normalized and "size=" not in normalized:
+    sep = "&" if "?" in normalized else "?"
+    for size in (512, 256, 128):
+      sized = f"{normalized}{sep}size={size}"
+      if sized not in candidates:
+        candidates.append(sized)
+  return candidates
+
+
+async def download_url_to_file(
+  session: aiohttp.ClientSession,
+  url: str,
+  dest: Path,
+) -> bool:
+  return await _download_url(session, url, dest)
+
+
+async def download_max_image_url(
+  session: aiohttp.ClientSession,
+  url: str,
+  dest: Path,
+) -> bool:
+  for candidate in max_image_url_candidates(url):
+    if await _download_url(session, candidate, dest):
+      if dest.stat().st_size > 0:
+        return True
+      dest.unlink(missing_ok=True)
+  return False
+
+
 async def _download_url(
   session: aiohttp.ClientSession,
   url: str,

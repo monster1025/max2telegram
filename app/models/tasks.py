@@ -33,6 +33,11 @@ class Max2TgTask(BaseModel):
   sender_name: str | None = None
   is_dm: bool = False
   chat_title: str
+  chat_name: str = ""
+  chat_icon_url: str | None = None
+  chat_icon_local_path: str | None = None
+  participants_count: int = 0
+  max_chat_link: str | None = None
   needs_new_topic: bool = False
   reply_to_tg_message_id: int | None = None
   media: list[MediaItem] = Field(default_factory=list)

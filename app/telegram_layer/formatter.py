@@ -12,6 +12,25 @@ def format_tg_author(message: Message) -> tuple[str, str | None]:
   return name, user.username
 
 
+def format_topic_pin_text(
+  *,
+  chat_name: str,
+  is_dm: bool,
+  max_chat_id: int,
+  participants_count: int,
+  max_chat_link: str | None,
+) -> str:
+  chat_type = "PRIVATE" if is_dm else "CHAT"
+  lines = [
+    f"{chat_name} · Тип: {chat_type}",
+    f"id: {max_chat_id}",
+    f"Участников: {participants_count}",
+  ]
+  if max_chat_link:
+    lines.extend(["", f"🔗 {max_chat_link}"])
+  return "\n".join(lines)
+
+
 def format_tg_to_max_text(author_name: str, username: str | None, text: str) -> str:
   handle = f" (@{username})" if username else ""
   return f"{author_name}{handle}:\n{text}"

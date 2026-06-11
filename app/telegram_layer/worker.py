@@ -1,4 +1,6 @@
 import asyncio
+from pathlib import Path
+from uuid import uuid4
 
 import aiohttp
 import structlog
@@ -12,7 +14,13 @@ from aiogram.types import (
 )
 
 from app.config import Settings
-from app.media_transfer import cleanup_paths, download_media_item, resolve_file_name, tmp_dir
+from app.media_transfer import (
+  cleanup_paths,
+  download_max_image_url,
+  download_media_item,
+  resolve_file_name,
+  tmp_dir,
+)
 from app.max_layer.client_holder import MaxClientHolder
 from app.max_layer.formatter import format_max_text
 from app.models.domain import ChatMapping, MaxIncomingMessage
@@ -25,6 +33,7 @@ from app.models.tasks import (
 from app.queue.protocols import QueuePort
 from app.storage.protocols import StoragePort
 from app.telegram_layer.bot_holder import BotHolder
+from app.telegram_layer.formatter import format_topic_pin_text
 from app.topic_locks import TopicLockRegistry
 
 logger = structlog.get_logger(__name__)
@@ -98,6 +107,7 @@ class TelegramWorker:
       is_dm=task.is_dm,
     )
     await self._storage.save_mapping(mapping)
+    await self._send_and_pin_topic_info(bot, topic.message_thread_id, task)
     logger.info(
       "tg_topic_created",
       max_chat_id=task.max_chat_id,
@@ -107,6 +117,86 @@ class TelegramWorker:
       old_thread_id=old_thread_id,
     )
     return mapping
+
+  async def _send_and_pin_topic_info(
+    self,
+    bot,
+    thread_id: int,
+    task: Max2TgTask,
+  ) -> None:
+    chat_name = task.chat_name or task.chat_title
+    caption = format_topic_pin_text(
+      chat_name=chat_name,
+      is_dm=task.is_dm,
+      max_chat_id=task.max_chat_id,
+      participants_count=task.participants_count,
+      max_chat_link=task.max_chat_link,
+    )
+    kwargs: dict = {
+      "chat_id": self._settings.tg_forum_channel_id,
+      "message_thread_id": thread_id,
+    }
+
+    downloaded: Path | None = None
+    icon_path: Path | None = None
+    try:
+      icon_path = await self._resolve_topic_icon_path(task)
+      if icon_path is not None:
+        sent = await bot.send_photo(
+          photo=FSInputFile(icon_path),
+          caption=caption,
+          **kwargs,
+        )
+        if (
+          not task.chat_icon_local_path
+          or icon_path.resolve() != Path(task.chat_icon_local_path).resolve()
+        ):
+          downloaded = icon_path
+      else:
+        sent = await bot.send_message(text=caption, **kwargs)
+
+      await bot.pin_chat_message(
+        chat_id=self._settings.tg_forum_channel_id,
+        message_id=sent.message_id,
+        disable_notification=True,
+      )
+      logger.info(
+        "tg_topic_info_pinned",
+        max_chat_id=task.max_chat_id,
+        thread_id=thread_id,
+        message_id=sent.message_id,
+        has_icon=icon_path is not None,
+      )
+    except Exception:
+      logger.exception(
+        "tg_topic_info_pin_failed",
+        max_chat_id=task.max_chat_id,
+        thread_id=thread_id,
+      )
+    finally:
+      if downloaded is not None:
+        cleanup_paths([downloaded])
+
+  async def _resolve_topic_icon_path(self, task: Max2TgTask) -> Path | None:
+    if task.chat_icon_local_path:
+      local = Path(task.chat_icon_local_path)
+      if local.is_file() and local.stat().st_size > 0:
+        return local
+
+    if not task.chat_icon_url:
+      return None
+
+    dest = self._tmp_dir / f"topic_icon_{task.max_chat_id}_{uuid4().hex}.jpg"
+    async with aiohttp.ClientSession() as session:
+      if await download_max_image_url(session, task.chat_icon_url, dest):
+        return dest
+    logger.warning(
+      "tg_topic_icon_download_failed",
+      max_chat_id=task.max_chat_id,
+      url=task.chat_icon_url,
+    )
+    dest.unlink(missing_ok=True)
+    return None
 
   async def _send_to_tg(self, task: Max2TgTask) -> None:
     bot = await self._bot_holder.wait_bot()
@@ -159,6 +249,11 @@ class TelegramWorker:
         sender_name=task.sender_name,
         is_dm=task.is_dm,
         chat_title=task.chat_title,
+        chat_name=task.chat_name,
+        chat_icon_url=task.chat_icon_url,
+        chat_icon_local_path=task.chat_icon_local_path,
+        participants_count=task.participants_count,
+        max_chat_link=task.max_chat_link,
         reply_to_max_message_id=None,
         media=[],
       )

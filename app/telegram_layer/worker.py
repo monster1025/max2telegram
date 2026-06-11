@@ -2,6 +2,7 @@ import asyncio
 
 import aiohttp
 import structlog
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
   FSInputFile,
   InputMediaDocument,
@@ -27,6 +28,10 @@ from app.telegram_layer.bot_holder import BotHolder
 from app.topic_locks import TopicLockRegistry
 
 logger = structlog.get_logger(__name__)
+
+
+def _is_thread_not_found(exc: TelegramBadRequest) -> bool:
+  return "message thread not found" in exc.message.lower()
 
 
 class TelegramWorker:
@@ -73,6 +78,36 @@ class TelegramWorker:
           )
       await asyncio.sleep(self._settings.tg_rate_limit_delay_sec)
 
+  async def _create_and_save_topic(
+    self,
+    bot,
+    task: Max2TgTask,
+    *,
+    reason: str,
+    old_thread_id: int | None = None,
+  ) -> ChatMapping:
+    topic = await bot.create_forum_topic(
+      chat_id=self._settings.tg_forum_channel_id,
+      name=task.chat_title[:128],
+    )
+    mapping = ChatMapping(
+      max_chat_id=task.max_chat_id,
+      tg_chat_id=self._settings.tg_forum_channel_id,
+      tg_thread_id=topic.message_thread_id,
+      display_name=task.chat_title,
+      is_dm=task.is_dm,
+    )
+    await self._storage.save_mapping(mapping)
+    logger.info(
+      "tg_topic_created",
+      max_chat_id=task.max_chat_id,
+      thread_id=topic.message_thread_id,
+      title=task.chat_title,
+      reason=reason,
+      old_thread_id=old_thread_id,
+    )
+    return mapping
+
   async def _send_to_tg(self, task: Max2TgTask) -> None:
     bot = await self._bot_holder.wait_bot()
     logger.debug(
@@ -86,23 +121,25 @@ class TelegramWorker:
     async with self._topic_locks.lock(task.max_chat_id):
       mapping = await self._storage.get_mapping_by_max_chat(task.max_chat_id)
       if mapping is None:
-        topic = await bot.create_forum_topic(
-          chat_id=self._settings.tg_forum_channel_id,
-          name=task.chat_title[:128],
-        )
-        mapping = ChatMapping(
-          max_chat_id=task.max_chat_id,
-          tg_chat_id=self._settings.tg_forum_channel_id,
-          tg_thread_id=topic.message_thread_id,
-          display_name=task.chat_title,
-          is_dm=task.is_dm,
-        )
-        await self._storage.save_mapping(mapping)
         logger.info(
-          "tg_topic_created",
+          "tg_topic_creating",
           max_chat_id=task.max_chat_id,
-          thread_id=topic.message_thread_id,
           title=task.chat_title,
+          reason="no_mapping_in_storage_at_send_time",
+          needs_new_topic_from_router=task.needs_new_topic,
+          sqlite_path=self._settings.sqlite_path,
+          hint="mapping_missing_in_sqlite_will_call_create_forum_topic",
+        )
+        mapping = await self._create_and_save_topic(
+          bot, task, reason="no_mapping_in_storage"
+        )
+      elif task.needs_new_topic:
+        logger.info(
+          "tg_topic_reused",
+          max_chat_id=task.max_chat_id,
+          thread_id=mapping.tg_thread_id,
+          reason="mapping_found_despite_needs_new_topic_flag",
+          hint="mapping_appeared_between_router_enqueue_and_worker_send",
         )
       else:
         logger.debug(
@@ -112,7 +149,6 @@ class TelegramWorker:
         )
 
     assert mapping is not None
-    thread_id = mapping.tg_thread_id
 
     formatted = format_max_text(
       MaxIncomingMessage(
@@ -128,9 +164,32 @@ class TelegramWorker:
       )
     )
 
-    sent = await self._dispatch_content(
-      bot, thread_id, formatted, task.media, task.reply_to_tg_message_id
-    )
+    reply_to = task.reply_to_tg_message_id
+    try:
+      sent = await self._dispatch_content(
+        bot, mapping.tg_thread_id, formatted, task.media, reply_to
+      )
+    except TelegramBadRequest as exc:
+      if not _is_thread_not_found(exc):
+        raise
+      old_thread_id = mapping.tg_thread_id
+      logger.info(
+        "tg_topic_stale",
+        max_chat_id=task.max_chat_id,
+        old_thread_id=old_thread_id,
+        reason="telegram_message_thread_not_found",
+        action="recreate_topic_and_update_binding",
+      )
+      async with self._topic_locks.lock(task.max_chat_id):
+        mapping = await self._create_and_save_topic(
+          bot,
+          task,
+          reason="telegram_thread_recreated",
+          old_thread_id=old_thread_id,
+        )
+      sent = await self._dispatch_content(
+        bot, mapping.tg_thread_id, formatted, task.media, None
+      )
     if sent is None:
       raise RuntimeError("Telegram API returned no message")
 
@@ -145,7 +204,7 @@ class TelegramWorker:
       "tg_message_sent",
       max_message_id=task.max_message_id,
       tg_message_id=sent.message_id,
-      thread_id=thread_id,
+      thread_id=mapping.tg_thread_id,
     )
 
   async def _dispatch_content(
@@ -157,11 +216,12 @@ class TelegramWorker:
     reply_to: int | None,
   ):
     chat_id = self._settings.tg_forum_channel_id
-    kwargs = {
+    kwargs: dict = {
       "chat_id": chat_id,
       "message_thread_id": thread_id,
-      "reply_to_message_id": reply_to,
     }
+    if reply_to is not None:
+      kwargs["reply_to_message_id"] = reply_to
 
     if not media:
       return await bot.send_message(text=text or " ", **kwargs)

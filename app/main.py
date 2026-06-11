@@ -50,11 +50,37 @@ async def main() -> None:
   storage = SqliteStorage(session_factory)
   await storage.init()
   mappings = await storage.list_mappings()
+  sqlite_file = Path(settings.sqlite_path)
+  db_exists = sqlite_file.is_file()
+  db_size_bytes = sqlite_file.stat().st_size if db_exists else 0
   logger.info(
     "storage_ready",
     sqlite_path=settings.sqlite_path,
+    database_url=settings.database_url,
+    db_file_exists=db_exists,
+    db_file_size_bytes=db_size_bytes,
     mapping_count=len(mappings),
   )
+  if len(mappings) == 0:
+    logger.info(
+      "storage_no_mappings",
+      reason="chat_mappings_table_empty",
+      effect="new_tg_forum_topic_will_be_created_for_each_max_chat",
+      hint="after_container_recreate_check_volume_mount_data_dir_and_sqlite_path",
+      sqlite_path=settings.sqlite_path,
+    )
+
+  legacy_db = Path.cwd() / "app" / "data" / "bridge.db"
+  if (
+    legacy_db.is_file()
+    and legacy_db.resolve() != sqlite_file.resolve()
+  ):
+    logger.warning(
+      "sqlite_legacy_path_detected",
+      legacy_path=str(legacy_db.resolve()),
+      active_path=settings.sqlite_path,
+      hint="old_database_url_app/data/bridge_db_writes_outside_volume_use_data/bridge_db",
+    )
 
   queue = RedisQueue(settings.redis_url)
   await queue.connect()

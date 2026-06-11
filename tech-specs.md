@@ -122,7 +122,7 @@ services:
       - TG_BOT_TOKEN=${TG_BOT_TOKEN}
       - TG_FORUM_CHANNEL_ID=${TG_FORUM_CHANNEL_ID}
       - FALLBACK_USER_ID=${FALLBACK_USER_ID}
-      - DATABASE_URL=sqlite+aiosqlite:///app/data/bridge.db
+      - DATABASE_URL=sqlite+aiosqlite:///data/bridge.db
       - REDIS_URL=redis://redis:6379/0
       - TG_RATE_LIMIT_DELAY_SEC=3.5
       - MAX_RATE_LIMIT_DELAY_SEC=1.0
@@ -211,7 +211,7 @@ volumes:
 | `TG_BOT_TOKEN` | Токен Telegram-бота от @BotFather | `123456:ABC-DEF1234...` |
 | `TG_FORUM_CHANNEL_ID` | ID Форум-канала (строго с `-100`) | `-1001234567890` |
 | `FALLBACK_USER_ID` | Telegram ID администратора | `987654321` |
-| `DATABASE_URL` | Строка подключения к SQLite | `sqlite+aiosqlite:///app/data/bridge.db` |
+| `DATABASE_URL` | Строка подключения к SQLite (относительно `WORKDIR=/app`) | `sqlite+aiosqlite:///data/bridge.db` |
 | `REDIS_URL` | Строка подключения к Redis | `redis://redis:6379/0` |
 | `TG_RATE_LIMIT_DELAY_SEC` | Задержка между отправками в TG | `3.5` |
 | `MAX_RATE_LIMIT_DELAY_SEC` | Задержка между отправками в MAX | `1.0` |

@@ -12,6 +12,7 @@ from app.max_layer.formatter import (
   build_chat_title,
   extract_forwarded_content,
   format_forwarded_text,
+  get_reply_target,
   resolve_media,
   resolve_raw_attaches,
   resolve_sender_name,
@@ -179,14 +180,7 @@ class MaxListener:
       except Exception:
         sender_name = f"User {message.sender}"
 
-    reply_to: int | None = None
-    if message.options and isinstance(message.options, dict):
-      reply_to = message.options.get("replyTo")
-    if reply_to is None and message.prev_message_id:
-      try:
-        reply_to = int(message.prev_message_id)
-      except (TypeError, ValueError):
-        reply_to = None
+    reply_to = get_reply_target(message)
 
     try:
       if forwarded_attaches is not None:
@@ -214,6 +208,7 @@ class MaxListener:
       text_len=len(effective_text),
       media_count=len(media),
       is_dm=is_dm,
+      reply_to=reply_to,
     )
 
     incoming = MaxIncomingMessage(

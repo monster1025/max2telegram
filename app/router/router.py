@@ -50,6 +50,21 @@ class MessageRouter:
         max_chat_id=message.max_chat_id,
         thread_id=mapping.tg_thread_id,
       )
+    else:
+      all_mappings = await self._storage.list_mappings()
+      logger.info(
+        "router_no_mapping",
+        max_chat_id=message.max_chat_id,
+        reason="chat_mapping_not_found_in_storage",
+        will_create_topic=True,
+        total_mappings_in_storage=len(all_mappings),
+        known_max_chat_ids=[m.max_chat_id for m in all_mappings] if all_mappings else [],
+        hint=(
+          "empty_db_after_container_recreate"
+          if not all_mappings
+          else "mapping_missing_for_this_chat_only"
+        ),
+      )
 
     reply_to_tg: int | None = None
     if message.reply_to_max_message_id is not None:

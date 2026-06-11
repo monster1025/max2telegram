@@ -2,6 +2,7 @@ from pathlib import Path
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine.url import make_url
 
 
 class Settings(BaseSettings):
@@ -12,7 +13,7 @@ class Settings(BaseSettings):
     tg_bot_token: str
     tg_forum_channel_id: int
     fallback_user_id: int
-    database_url: str = "sqlite+aiosqlite:///app/data/bridge.db"
+    database_url: str = "sqlite+aiosqlite:///data/bridge.db"
     redis_url: str = "redis://redis:6379/0"
     tg_rate_limit_delay_sec: float = 3.5
     max_rate_limit_delay_sec: float = 1.0
@@ -24,9 +25,11 @@ class Settings(BaseSettings):
 
     @property
     def sqlite_path(self) -> str:
-        if self.database_url.startswith("sqlite+aiosqlite:///"):
-            return self.database_url.removeprefix("sqlite+aiosqlite:///")
-        return "app/data/bridge.db"
+        db = make_url(self.database_url).database
+        if not db:
+            return str(Path("data/bridge.db").resolve())
+        path = Path(db)
+        return str(path if path.is_absolute() else path.resolve())
 
     @model_validator(mode="after")
     def _default_data_dir(self) -> "Settings":

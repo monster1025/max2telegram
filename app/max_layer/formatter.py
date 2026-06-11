@@ -16,6 +16,21 @@ def get_forward_link(message: MaxMessage) -> dict[str, Any] | None:
   return link
 
 
+def get_reply_target(message: MaxMessage) -> int | None:
+  link = getattr(message, "link", None)
+  if not isinstance(link, dict):
+    return None
+  if str(link.get("type", "")).upper() != "REPLY":
+    return None
+  target = link.get("messageId") or link.get("message_id")
+  if target is None:
+    return None
+  try:
+    return int(target)
+  except (TypeError, ValueError):
+    return None
+
+
 def extract_forwarded_content(
   message: MaxMessage,
 ) -> tuple[str, list[dict[str, Any]]] | None:

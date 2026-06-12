@@ -2,6 +2,17 @@ from aiogram.types import Message
 
 from app.models.domain import TgIncomingMessage
 
+TG_CAPTION_MAX_LEN = 1024
+TG_MESSAGE_MAX_LEN = 4096
+
+
+def split_text_for_media_caption(text: str) -> tuple[str | None, str | None]:
+  if not text:
+    return None, None
+  if len(text) <= TG_CAPTION_MAX_LEN:
+    return text, None
+  return None, text
+
 
 def format_tg_author(message: Message) -> tuple[str, str | None]:
   user = message.from_user

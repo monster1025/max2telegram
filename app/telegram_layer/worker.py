@@ -33,7 +33,10 @@ from app.models.tasks import (
 from app.queue.protocols import QueuePort
 from app.storage.protocols import StoragePort
 from app.telegram_layer.bot_holder import BotHolder
-from app.telegram_layer.formatter import format_topic_pin_text
+from app.telegram_layer.formatter import (
+  format_topic_pin_text,
+  split_text_for_media_caption,
+)
 from app.topic_locks import TopicLockRegistry
 
 logger = structlog.get_logger(__name__)
@@ -302,6 +305,26 @@ class TelegramWorker:
       thread_id=mapping.tg_thread_id,
     )
 
+  async def _send_overflow_text(
+    self,
+    bot,
+    *,
+    thread_id: int,
+    text: str,
+    reply_to_message_id: int,
+  ) -> None:
+    await bot.send_message(
+      chat_id=self._settings.tg_forum_channel_id,
+      message_thread_id=thread_id,
+      text=text,
+      reply_to_message_id=reply_to_message_id,
+    )
+    logger.info(
+      "tg_caption_overflow_sent",
+      thread_id=thread_id,
+      text_len=len(text),
+    )
+
   async def _dispatch_content(
     self,
     bot,
@@ -320,6 +343,8 @@ class TelegramWorker:
 
     if not media:
       return await bot.send_message(text=text or " ", **kwargs)
+
+    caption, overflow = split_text_for_media_caption(text)
 
     downloaded: list = []
     try:
@@ -354,33 +379,43 @@ class TelegramWorker:
         if len(uploads) == 1:
           item, upload = uploads[0]
           if item.kind == "photo":
-            return await bot.send_photo(
-              photo=upload, caption=text or None, **kwargs
+            sent = await bot.send_photo(
+              photo=upload, caption=caption, **kwargs
             )
-          if item.kind == "video":
-            return await bot.send_video(
-              video=upload, caption=text or None, **kwargs
-            )
-          return await bot.send_document(
-            document=upload, caption=text or None, **kwargs
-          )
-
-        group = []
-        for idx, (item, upload) in enumerate(uploads):
-          caption = text if idx == 0 else None
-          if item.kind == "photo":
-            group.append(InputMediaPhoto(media=upload, caption=caption))
           elif item.kind == "video":
-            group.append(InputMediaVideo(media=upload, caption=caption))
+            sent = await bot.send_video(
+              video=upload, caption=caption, **kwargs
+            )
           else:
-            group.append(InputMediaDocument(media=upload, caption=caption))
+            sent = await bot.send_document(
+              document=upload, caption=caption, **kwargs
+            )
+        else:
+          group = []
+          for idx, (item, upload) in enumerate(uploads):
+            item_caption = caption if idx == 0 else None
+            if item.kind == "photo":
+              group.append(InputMediaPhoto(media=upload, caption=item_caption))
+            elif item.kind == "video":
+              group.append(InputMediaVideo(media=upload, caption=item_caption))
+            else:
+              group.append(InputMediaDocument(media=upload, caption=item_caption))
 
-        messages = await bot.send_media_group(
-          chat_id=chat_id,
-          message_thread_id=thread_id,
-          media=group,
-        )
-        return messages[0]
+          messages = await bot.send_media_group(
+            chat_id=chat_id,
+            message_thread_id=thread_id,
+            media=group,
+          )
+          sent = messages[0]
+
+        if overflow:
+          await self._send_overflow_text(
+            bot,
+            thread_id=thread_id,
+            text=overflow,
+            reply_to_message_id=sent.message_id,
+          )
+        return sent
     finally:
       cleanup_paths(downloaded)
 

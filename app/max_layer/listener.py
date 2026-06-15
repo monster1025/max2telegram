@@ -121,6 +121,8 @@ class MaxListener:
           continue
         logger.info("max_history_fetched", chat_id=chat.id, count=len(messages))
         for msg in sorted(messages, key=lambda m: m.id):
+          if msg.chat_id is None:
+            msg.chat_id = chat.id
           await self._process_message(client, msg)
       except Exception:
         logger.exception("max_history_fetch_failed", chat_id=chat.id)
